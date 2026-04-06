@@ -13,9 +13,12 @@ type NameStatus = 'idle' | 'loading' | 'done' | 'error';
 type ToastKind = 'ok' | 'err' | 'info';
 type TouchToolMode = 'erase' | 'restore';
 type ActiveTab = 'tool' | 'library';
+type BgActionType = 'one' | 'all';
 const RBLX_SETTINGS_STORAGE_KEY = 'pixel_forge_publish_settings_v1';
 const RBLX_PRESETS_STORAGE_KEY = 'pixel_forge_publish_presets_v1';
 const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
+const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
+const BG_MODEL_ESTIMATED_SIZE = '~200MB';
 
 interface CachedImage {
   id: string;
@@ -449,6 +452,8 @@ export default function ImageTool() {
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
   const [publishDialogMounted, setPublishDialogMounted] = useState(false);
   const [publishDialogVisible, setPublishDialogVisible] = useState(false);
+  const [bgNoticeDialogOpen, setBgNoticeDialogOpen] = useState(false);
+  const [bgNoticeAction, setBgNoticeAction] = useState<BgActionType | null>(null);
   const [presetName, setPresetName] = useState('');
   const [presets, setPresets] = useState<PublishPreset[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState('');
@@ -890,15 +895,15 @@ export default function ImageTool() {
     updateItem(id, { bgStatus: 'processing', bgError: undefined });
     if (standalone) { setBgBusy(true); setBgPct(0); }
 
+    let fakeProgress = 0;
+    const ticker = setInterval(() => {
+      fakeProgress = Math.min(fakeProgress + 3, 90);
+      setBgPct(fakeProgress);
+    }, 400);
+
     try {
       const fd = new FormData();
       fd.append('image', activeBlob(item), 'source.png');
-
-      let fakeProgress = 0;
-      const ticker = setInterval(() => {
-        fakeProgress = Math.min(fakeProgress + 3, 90);
-        setBgPct(fakeProgress);
-      }, 400);
 
       const res = await fetch('/api/remove-background', { method: 'POST', body: fd });
       clearInterval(ticker);
@@ -945,6 +950,7 @@ export default function ImageTool() {
       updateItem(id, { bgStatus: 'error', bgError: msg });
       if (standalone) showToast(msg, 'err');
     } finally {
+      clearInterval(ticker);
       if (standalone) { setBgBusy(false); setBgPct(0); }
     }
   }, [showToast]);
@@ -1329,6 +1335,45 @@ export default function ImageTool() {
     setBgBatchInfo(null);
     showToast('Batch processing complete', 'ok');
   }, [showToast, removeBgOne]);
+
+  const runBgAction = useCallback((action: BgActionType) => {
+    if (action === 'one') {
+      if (!selectedId) return;
+      void removeBgOne(selectedId);
+      return;
+    }
+    void removeBgAll();
+  }, [selectedId, removeBgOne, removeBgAll]);
+
+  const requestBgAction = useCallback((action: BgActionType) => {
+    if (typeof window === 'undefined') {
+      runBgAction(action);
+      return;
+    }
+    const alreadyAccepted = window.localStorage.getItem(BG_MODEL_NOTICE_ACK_KEY) === '1';
+    if (alreadyAccepted) {
+      runBgAction(action);
+      return;
+    }
+    setBgNoticeAction(action);
+    setBgNoticeDialogOpen(true);
+  }, [runBgAction]);
+
+  const closeBgNoticeDialog = useCallback(() => {
+    setBgNoticeDialogOpen(false);
+    setBgNoticeAction(null);
+  }, []);
+
+  const confirmBgNoticeDialog = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(BG_MODEL_NOTICE_ACK_KEY, '1');
+    }
+    const action = bgNoticeAction;
+    setBgNoticeDialogOpen(false);
+    setBgNoticeAction(null);
+    showToast(`Downloading local model (${BG_MODEL_ESTIMATED_SIZE}) on first run...`, 'info');
+    if (action) runBgAction(action);
+  }, [bgNoticeAction, runBgAction, showToast]);
 
   // ── Export ────────────────────────────────────────────────────────────────────
 
@@ -2003,7 +2048,10 @@ export default function ImageTool() {
               <div className={`${styles.btnGroup} ${styles.btnGroupLoose}`}>
                 <button
                   className={`${styles.btn} ${styles.btnPrimary} ${styles.btnFull}`}
-                  onClick={() => selectedId && removeBgOne(selectedId)}
+                  onClick={() => {
+                    if (!selectedId) return;
+                    requestBgAction('one');
+                  }}
                   disabled={!selectedItem || bgBusy || selectedItem.bgStatus === 'processing'}
                   title="Process only the selected image"
                 >
@@ -2011,7 +2059,9 @@ export default function ImageTool() {
                 </button>
                 <button
                   className={`${styles.btn} ${styles.btnFull}`}
-                  onClick={removeBgAll}
+                  onClick={() => {
+                    requestBgAction('all');
+                  }}
                   disabled={
                     !hasItems ||
                     bgBusy
@@ -2021,6 +2071,9 @@ export default function ImageTool() {
                   {bgBusy && bgBatchInfo ? '◌ Processing All…' : 'Remove BG from All'}
                 </button>
               </div>
+              <p className={styles.subtleHint}>
+                First run downloads a local AI model ({BG_MODEL_ESTIMATED_SIZE}) one time.
+              </p>
 
               {!touchUpOpen ? (
                 <button
@@ -2213,6 +2266,36 @@ export default function ImageTool() {
           }`}
         >
           {toast.msg}
+        </div>
+      )}
+
+      {bgNoticeDialogOpen && (
+        <div className={`${styles.dialogBackdrop} ${styles.open}`} onClick={closeBgNoticeDialog}>
+          <div className={styles.dialogPanel} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.dialogHead}>
+              <span className={styles.dialogTitle}>First-time AI model download</span>
+              <button className={styles.dialogClose} onClick={closeBgNoticeDialog} title="Close dialog">
+                ✕
+              </button>
+            </div>
+            <div className={styles.dialogBody}>
+              <p className={styles.subtleHint}>
+                Pixel Forge will download the local AI model ({BG_MODEL_ESTIMATED_SIZE}) one time.
+                Keep this tab open during the initial download.
+              </p>
+              <p className={styles.subtleHint}>
+                Later Remove BG runs will use the cached model and start much faster.
+              </p>
+              <div className={`${styles.btnGroup} ${styles.btnGroupLoose}`}>
+                <button className={`${styles.btn} ${styles.btnFull}`} onClick={closeBgNoticeDialog}>
+                  Cancel
+                </button>
+                <button className={`${styles.btn} ${styles.btnPrimary} ${styles.btnFull}`} onClick={confirmBgNoticeDialog}>
+                  Continue
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

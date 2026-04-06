@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+export const runtime = 'nodejs';
 // Allow up to 45 s on Vercel Pro; free tier caps at 10 s.
 export const maxDuration = 45;
 
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
-    const imageFile = formData.get('image') as Blob | null;
+    const imageEntry = formData.get('image');
+    const imageFile = imageEntry instanceof Blob ? imageEntry : null;
 
     if (!imageFile) {
       return NextResponse.json({ error: 'Missing image field' }, { status: 400 });
@@ -24,7 +26,6 @@ export async function POST(request: NextRequest) {
     });
 
     const resultBuffer = Buffer.from(await resultBlob.arrayBuffer());
-
     return new NextResponse(resultBuffer, {
       status: 200,
       headers: {
