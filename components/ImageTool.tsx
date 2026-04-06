@@ -12,8 +12,18 @@ type PubStatus = 'idle' | 'queued' | 'publishing' | 'done' | 'error';
 type NameStatus = 'idle' | 'loading' | 'done' | 'error';
 type ToastKind = 'ok' | 'err' | 'info';
 type TouchToolMode = 'erase' | 'restore';
+type ActiveTab = 'tool' | 'library';
 const RBLX_SETTINGS_STORAGE_KEY = 'pixel_forge_publish_settings_v1';
 const RBLX_PRESETS_STORAGE_KEY = 'pixel_forge_publish_presets_v1';
+const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
+
+interface CachedImage {
+  id: string;
+  previewDataUrl: string;
+  assetId: string;
+  name: string;
+  publishedAt: number;
+}
 
 interface ImageItem {
   id: string;
@@ -312,6 +322,84 @@ function nameClassForItem(item: ImageItem): string {
   return item.nameStatus === 'loading' ? styles.ghostName : '';
 }
 
+async function defringeAlpha(source: Blob): Promise<Blob> {
+  // Replace the RGB of every non-fully-opaque pixel with the average color of its
+  // fully-opaque neighbors. This eliminates the dark "halo" that appears at edges
+  // when a background-removed image is scaled down, because the transparent pixels
+  // will carry the subject's color instead of the original dark background color.
+  const img = await blobToImage(source);
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (!w || !h) return source;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return source;
+
+  ctx.drawImage(img, 0, 0);
+  const src = ctx.getImageData(0, 0, w, h);
+  const d = src.data;
+  const out = new Uint8ClampedArray(d);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (d[i + 3] === 255) continue; // fully opaque — nothing to fix
+
+      let rSum = 0, gSum = 0, bSum = 0, wSum = 0;
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const ni = (ny * w + nx) * 4;
+          if (d[ni + 3] === 255) {
+            rSum += d[ni]; gSum += d[ni + 1]; bSum += d[ni + 2];
+            wSum++;
+          }
+        }
+      }
+
+      if (wSum > 0) {
+        out[i]     = Math.round(rSum / wSum);
+        out[i + 1] = Math.round(gSum / wSum);
+        out[i + 2] = Math.round(bSum / wSum);
+        // alpha is intentionally unchanged
+      }
+    }
+  }
+
+  ctx.putImageData(new ImageData(out, w, h), 0, 0);
+  return canvasToPngBlob(canvas);
+}
+
+function blobToThumbnailDataUrl(blob: Blob, size = 80): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('No canvas context')); return; }
+      const scale = Math.min(size / img.naturalWidth, size / img.naturalHeight);
+      const dw = img.naturalWidth * scale;
+      const dh = img.naturalHeight * scale;
+      const dx = (size - dw) / 2;
+      const dy = (size - dh) / 2;
+      ctx.clearRect(0, 0, size, size);
+      ctx.drawImage(img, dx, dy, dw, dh);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image load failed')); };
+    img.src = url;
+  });
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ImageTool() {
@@ -364,6 +452,9 @@ export default function ImageTool() {
   const [presetName, setPresetName] = useState('');
   const [presets, setPresets] = useState<PublishPreset[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState('');
+  const [storageHydrated, setStorageHydrated] = useState(false);
+  const [imageLibrary, setImageLibrary] = useState<CachedImage[]>([]);
+  const [activeTab, setActiveTab] = useState<ActiveTab>('tool');
 
   // Toast
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -546,9 +637,31 @@ export default function ImageTool() {
     } catch {
       // Ignore invalid local storage payloads.
     }
+
+    try {
+      const rawLib = window.localStorage.getItem(RBLX_LIBRARY_STORAGE_KEY);
+      if (rawLib) {
+        const parsed = JSON.parse(rawLib) as unknown;
+        if (Array.isArray(parsed)) {
+          const valid = parsed.filter((e): e is CachedImage =>
+            typeof (e as CachedImage).id === 'string' &&
+            typeof (e as CachedImage).previewDataUrl === 'string' &&
+            typeof (e as CachedImage).assetId === 'string' &&
+            typeof (e as CachedImage).name === 'string' &&
+            typeof (e as CachedImage).publishedAt === 'number',
+          );
+          setImageLibrary(valid);
+        }
+      }
+    } catch {
+      // Ignore invalid local storage payloads.
+    }
+
+    setStorageHydrated(true);
   }, []);
 
   useEffect(() => {
+    if (!storageHydrated) return;
     try {
       window.localStorage.setItem(
         RBLX_SETTINGS_STORAGE_KEY,
@@ -557,15 +670,25 @@ export default function ImageTool() {
     } catch {
       // Ignore localStorage write errors (private mode / quota).
     }
-  }, [apiKey, creatorType, creatorId]);
+  }, [apiKey, creatorType, creatorId, storageHydrated]);
 
   useEffect(() => {
+    if (!storageHydrated) return;
     try {
       window.localStorage.setItem(RBLX_PRESETS_STORAGE_KEY, JSON.stringify(presets));
     } catch {
       // Ignore localStorage write errors (private mode / quota).
     }
-  }, [presets]);
+  }, [presets, storageHydrated]);
+
+  useEffect(() => {
+    if (!storageHydrated) return;
+    try {
+      window.localStorage.setItem(RBLX_LIBRARY_STORAGE_KEY, JSON.stringify(imageLibrary));
+    } catch {
+      // Ignore localStorage write errors (private mode / quota).
+    }
+  }, [imageLibrary, storageHydrated]);
 
   // ── Derived ──────────────────────────────────────────────────────────────────
 
@@ -788,16 +911,21 @@ export default function ImageTool() {
 
       const result = await res.blob();
 
+      // Fix alpha bleeding: replace edge pixel colors with nearest opaque neighbor color
+      // so scaling doesn't produce a dark halo around the subject.
+      let defringed = result;
+      try { defringed = await defringeAlpha(result); } catch { /* keep original */ }
+
       // After BG removal, crop transparent borders so the subject fits the frame.
       // Also keeps the subject proportions stable through export.
-      let processed = result;
+      let processed = defringed;
       let cropRect: ImageItem['cropRect'] = null;
       try {
-        const cropped = await autoCropTransparentWithRect(result);
+        const cropped = await autoCropTransparentWithRect(defringed);
         processed = cropped.blob;
         cropRect = cropped.rect;
       } catch {
-        processed = result;
+        processed = defringed;
         cropRect = null;
       }
 
@@ -1250,7 +1378,77 @@ export default function ImageTool() {
     if (locked) setTw(v);
   };
 
+  // ── Image Library ─────────────────────────────────────────────────────────────
+
+  const addToLibrary = useCallback(async (item: ImageItem, assetId: string) => {
+    try {
+      const previewDataUrl = await blobToThumbnailDataUrl(activeBlob(item));
+      const entry: CachedImage = {
+        id: uid(),
+        previewDataUrl,
+        assetId,
+        name: item.fileName.replace(/\.[^.]+$/, '') || 'image',
+        publishedAt: Date.now(),
+      };
+      setImageLibrary((prev) => {
+        if (prev.some((e) => e.assetId === assetId)) return prev;
+        return [entry, ...prev];
+      });
+    } catch {
+      // Best-effort — never block publish on a thumbnail failure.
+    }
+  }, []);
+
+  const deleteFromLibrary = useCallback((id: string) => {
+    setImageLibrary((prev) => prev.filter((e) => e.id !== id));
+  }, []);
+
+  const copyLibraryId = useCallback((assetId: string) => {
+    navigator.clipboard.writeText(assetId);
+    showToast('Copied!', 'ok');
+  }, [showToast]);
+
   // ── Publish ───────────────────────────────────────────────────────────────────
+
+  const publishOne = useCallback(async (id: string) => {
+    const item = itemsRef.current.find((i) => i.id === id);
+    if (!item) return;
+    if (!apiKey.trim()) { showToast('Enter your Roblox API key', 'err'); return; }
+    if (!creatorId.trim()) { showToast('Enter a creator ID', 'err'); return; }
+
+    setPublishing(true);
+    updateItem(id, { pubStatus: 'publishing', pubAssetId: undefined, pubError: undefined });
+
+    try {
+      const blob = await getExportBlob(item);
+      const assetName = item.fileName.replace(/\.[^.]+$/, '') || 'Uploaded Icon';
+      const fd = new FormData();
+      fd.append('apiKey', apiKey.trim());
+      fd.append('creatorType', creatorType);
+      fd.append('creatorId', creatorId.trim());
+      fd.append('assetName', assetName);
+      fd.append('image', blob, `icon.${format}`);
+
+      const res = await fetch('/api/roblox-upload', { method: 'POST', body: fd });
+      const data: { assetId?: string | number; error?: string; success?: boolean } = await res.json();
+
+      if (data.success && data.assetId) {
+        const assetId = String(data.assetId);
+        updateItem(id, { pubStatus: 'done', pubAssetId: assetId });
+        void addToLibrary(item, assetId);
+        showToast('Published!', 'ok');
+      } else {
+        updateItem(id, { pubStatus: 'error', pubError: data.error ?? 'Unknown error' });
+        showToast(data.error ?? 'Publish failed', 'err');
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Publish failed';
+      updateItem(id, { pubStatus: 'error', pubError: msg });
+      showToast(msg, 'err');
+    } finally {
+      setPublishing(false);
+    }
+  }, [apiKey, creatorId, creatorType, format, getExportBlob, showToast, addToLibrary]);
 
   const publishAll = useCallback(async () => {
     if (items.length === 0) return;
@@ -1258,6 +1456,8 @@ export default function ImageTool() {
     if (!creatorId.trim()) { showToast('Enter a creator ID', 'err'); return; }
 
     setPublishing(true);
+    let successCount = 0;
+    let errorCount = 0;
 
     // Mark all as queued first
     setItems((prev) => prev.map((i) => ({ ...i, pubStatus: 'queued' as PubStatus, pubAssetId: undefined, pubError: undefined })));
@@ -1282,12 +1482,15 @@ export default function ImageTool() {
 
         if (data.success && data.assetId) {
           const id = String(data.assetId);
+          successCount += 1;
           setItems((prev) =>
             prev.map((i) =>
               i.id === item.id ? { ...i, pubStatus: 'done' as PubStatus, pubAssetId: id } : i,
             ),
           );
+          void addToLibrary(item, id);
         } else {
+          errorCount += 1;
           setItems((prev) =>
             prev.map((i) =>
               i.id === item.id
@@ -1298,6 +1501,7 @@ export default function ImageTool() {
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Publish failed';
+        errorCount += 1;
         setItems((prev) =>
           prev.map((i) =>
             i.id === item.id ? { ...i, pubStatus: 'error' as PubStatus, pubError: msg } : i,
@@ -1307,8 +1511,16 @@ export default function ImageTool() {
     }
 
     setPublishing(false);
-    showToast('Publish complete', 'ok');
-  }, [items, apiKey, creatorType, creatorId, format, getExportBlob, showToast]);
+    if (successCount > 0 && errorCount === 0) {
+      showToast(`Publish complete: ${successCount}/${items.length} succeeded`, 'ok');
+      return;
+    }
+    if (successCount > 0 && errorCount > 0) {
+      showToast(`Publish finished: ${successCount} succeeded, ${errorCount} failed`, 'info');
+      return;
+    }
+    showToast(`Publish failed: ${errorCount}/${items.length} failed`, 'err');
+  }, [items, apiKey, creatorType, creatorId, format, getExportBlob, showToast, addToLibrary]);
 
   const copyAssetId = useCallback((id: string) => {
     const item = items.find((i) => i.id === id);
@@ -1441,25 +1653,95 @@ export default function ImageTool() {
         <div className={styles.headerLeft}>
           <span className={styles.logoMark}>PIXEL FORGE</span>
           <span className={styles.logoDivider} />
-          <span className={styles.logoSub}>Roblox Image Tool</span>
+          <nav className={styles.headerTabs}>
+            <button
+              className={`${styles.headerTab}${activeTab === 'tool' ? ` ${styles.headerTabActive}` : ''}`}
+              onClick={() => setActiveTab('tool')}
+            >
+              Tool
+            </button>
+            <button
+              className={`${styles.headerTab}${activeTab === 'library' ? ` ${styles.headerTabActive}` : ''}`}
+              onClick={() => setActiveTab('library')}
+            >
+              Library
+              {imageLibrary.length > 0 && (
+                <span className={styles.headerTabBadge}>{imageLibrary.length}</span>
+              )}
+            </button>
+          </nav>
         </div>
         <div className={styles.headerRight}>
-          {hasItems && (
+          {activeTab === 'tool' && hasItems && (
             <span className={styles.headerMeta}>
               {items.length} image{items.length > 1 ? 's' : ''}
             </span>
           )}
-          {selectedItem && (
+          {activeTab === 'tool' && selectedItem && (
             <span className={styles.headerMeta}>
               {fmtBytes(activeBlob(selectedItem).size)}
             </span>
+          )}
+          {activeTab === 'library' && imageLibrary.length > 0 && (
+            <button
+              className={styles.libClearBtn}
+              onClick={() => { if (window.confirm('Remove all cached images from the library?')) setImageLibrary([]); }}
+            >
+              Clear All
+            </button>
           )}
           <span className={styles.vBadge}>v2.0</span>
         </div>
       </header>
 
+      {/* ── Library Page ── */}
+      {activeTab === 'library' && (
+        <div className={styles.libraryPage}>
+          {imageLibrary.length === 0 ? (
+            <div className={styles.libraryPageEmpty}>
+              <div className={styles.libraryPageEmptyIcon}>⬡</div>
+              <span className={styles.libraryPageEmptyTitle}>No images yet</span>
+              <span className={styles.libraryPageEmptySub}>
+                Images published to Roblox appear here with their IDs.
+              </span>
+            </div>
+          ) : (
+            <div className={styles.libraryPageGrid}>
+              {imageLibrary.map((entry) => (
+                <div key={entry.id} className={styles.libraryPageCard}>
+                  <div className={styles.libraryPageThumb}>
+                    <img src={entry.previewDataUrl} alt={entry.name} className={styles.libraryPageThumbImg} />
+                    <button
+                      className={styles.libraryPageDeleteBtn}
+                      onClick={() => deleteFromLibrary(entry.id)}
+                      title="Remove from library"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className={styles.libraryPageInfo}>
+                    <span className={styles.libraryPageName} title={entry.name}>{entry.name}</span>
+                    <button
+                      className={styles.libraryPageIdBtn}
+                      onClick={() => copyLibraryId(entry.assetId)}
+                      title={`Copy: ${entry.assetId}`}
+                    >
+                      <span className={styles.libraryPageIdLabel}>rbxassetid://</span>
+                      <span className={styles.libraryPageIdVal}>{entry.assetId}</span>
+                    </button>
+                    <span className={styles.libraryPageDate}>
+                      {new Date(entry.publishedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Body ── */}
-      <div className={styles.body}>
+      {activeTab === 'tool' && <div className={styles.body}>
 
         {/* ── Queue Panel ── */}
         <div className={styles.queuePanel}>
@@ -1867,6 +2149,15 @@ export default function ImageTool() {
                   ⚙
                 </button>
               </div>
+              {selectedItem && (
+                <button
+                  className={`${styles.btn} ${styles.btnFull}`}
+                  onClick={() => publishOne(selectedItem.id)}
+                  disabled={publishing || !apiKey.trim() || !creatorId.trim()}
+                >
+                  {selectedItem.pubStatus === 'publishing' ? '◌ Publishing…' : '▶ Publish Selected'}
+                </button>
+              )}
               <p className={styles.hint}>
                 {finishedCount > 0
                   ? `${finishedCount} / ${items.length} published`
@@ -1908,7 +2199,7 @@ export default function ImageTool() {
           </div>
 
         </aside>
-      </div>
+      </div>}
 
       {/* Toast */}
       {toast && (

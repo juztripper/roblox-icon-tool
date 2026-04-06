@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
       creatorType === 'group' ? { groupId: creatorId } : { userId: creatorId };
 
     const requestPayload = {
-      assetType: 'Decal',
+      assetType: 'Image',
       displayName: assetName,
       description: 'Uploaded via PIXEL FORGE',
       creationContext: { creator },
