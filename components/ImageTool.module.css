@@ -178,6 +178,16 @@
   white-space: nowrap;
 }
 
+.ghostName {
+  position: relative;
+  display: inline-block;
+  color: transparent;
+  user-select: none;
+  min-width: 88px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
 .thumbBgDot {
   width: 7px;
   height: 7px;
@@ -275,6 +285,12 @@
   flex-shrink: 0;
 }
 
+.previewMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .barLabel {
   font-size: 9px;
   font-weight: 700;
@@ -283,12 +299,73 @@
   color: var(--text-muted);
 }
 
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.ghostName::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 0.9em;
+  transform: translateY(-50%);
+  border-radius: 4px;
+  background: #2a2d36;
+}
+
+.ghostName::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.2) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
 .bgRemovedTag {
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.2em;
   color: var(--green);
   text-transform: uppercase;
+}
+
+.zoomTag {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  border: 1px solid var(--border-mid);
+  padding: 2px 6px;
+}
+
+.previewMiniBtn {
+  border: 1px solid var(--border-mid);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+
+.previewMiniBtn:hover {
+  border-color: var(--orange);
+  color: var(--orange);
+  background: var(--surface);
 }
 
 .previewArea {
@@ -318,6 +395,60 @@
   object-fit: contain;
   padding: 28px;
   animation: fade-in 0.25s ease;
+}
+
+.touchWrap {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  cursor: default;
+}
+
+.touchWrap.spacePan {
+  cursor: grab;
+}
+
+.touchWrap.spacePan:active {
+  cursor: grabbing;
+}
+
+.touchCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  cursor: crosshair;
+  touch-action: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.brushPreview {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+  /* Use very large radius so the ring is a true circle even with sub-pixel sizing. */
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  background: transparent;
+  /* Crisp round ring on both light and dark pixels */
+  filter: drop-shadow(0 0 0.75px rgba(0, 0, 0, 0.85));
+  pointer-events: none;
+  z-index: 6;
+  transition: opacity 0.08s linear;
+  display: block;
+}
+
+.previewNavImg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .emptyState {
@@ -453,6 +584,18 @@
   gap: 10px;
 }
 
+/* Looser rhythm for dense tools (Remove Background) */
+.sectionBodyComfort {
+  padding: 16px 16px 18px;
+  gap: 14px;
+  align-items: stretch;
+  max-width: 100%;
+}
+
+.btnGroupLoose {
+  gap: 12px;
+}
+
 /* ── Upload Zone ── */
 .uploadZone {
   position: relative;
@@ -581,6 +724,209 @@
 
 .btnFull {
   width: 100%;
+}
+
+.btnGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.publishRow {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.configGearBtn {
+  width: 42px;
+  flex-shrink: 0;
+  border: 1px solid var(--border-mid);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s, box-shadow 0.12s;
+}
+
+.configGearBtn:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--orange);
+  color: var(--orange);
+  box-shadow: 0 0 14px var(--orange-glow);
+}
+
+.configGearBtn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.touchTools {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.touchToolsCard {
+  padding: 14px 14px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-mid);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.touchCardHead {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+
+.touchCardTitle {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.touchCardSub {
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  line-height: 1.45;
+}
+
+.touchField {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.touchToolsCard .label {
+  margin-bottom: 0;
+}
+
+.labelComfort {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: none;
+  color: var(--text-muted);
+  flex: 1;
+  min-width: 0;
+}
+
+.sliderLabelRowComfort {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sliderValPill {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--orange);
+  background: var(--surface);
+  border: 1px solid var(--border-mid);
+  padding: 3px 9px;
+  border-radius: 4px;
+  line-height: 1.2;
+}
+
+.sliderGroupComfort {
+  gap: 10px;
+}
+
+.sliderComfort {
+  height: 5px;
+  margin: 4px 0 2px;
+  border-radius: 3px;
+}
+
+.sliderComfort::-webkit-slider-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.sliderComfort::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.smartToggleComfort {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  line-height: 1.45;
+  user-select: none;
+  padding: 10px 12px;
+  margin: 2px 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.smartToggleComfort input {
+  margin-top: 2px;
+  flex-shrink: 0;
+  accent-color: var(--orange);
+}
+
+.smartToggleComfort span {
+  flex: 1;
+}
+
+/* legacy — kept if referenced elsewhere */
+.smartToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  user-select: none;
+}
+
+.smartToggle input {
+  accent-color: var(--orange);
+}
+
+.touchActionsRow {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.hintComfort {
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.03em;
+  line-height: 1.65;
+  text-align: left;
+  margin: 0;
+  padding: 0 2px;
 }
 
 /* ── Form elements ── */
@@ -773,6 +1119,56 @@
 
 .eyeBtn:hover {
   color: var(--text-dim);
+}
+
+.presetBox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border-mid);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0));
+}
+
+.presetActions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.smallBtn {
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-mid);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.smallBtn:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--border-bright);
+  color: var(--text);
+}
+
+.smallBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.subtleHint {
+  margin: 0;
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  line-height: 1.5;
 }
 
 /* ── Result / Error blocks ── */
@@ -1105,4 +1501,88 @@
   background: var(--green);
   border-color: var(--green);
   box-shadow: 0 0 18px var(--green-glow);
+}
+
+/* ── Publish Dialog ── */
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 7, 10, 0);
+  backdrop-filter: blur(2px);
+  z-index: 250;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  opacity: 0;
+  pointer-events: none;
+  transition: background 0.18s ease, opacity 0.18s ease;
+}
+
+.dialogBackdrop.open {
+  background: rgba(6, 7, 10, 0.82);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.dialogPanel {
+  width: min(720px, 100%);
+  max-height: 88vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border-bright);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+  transform: translateY(10px) scale(0.985);
+  opacity: 0;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.dialogBackdrop.open .dialogPanel {
+  transform: translateY(0) scale(1);
+  opacity: 1;
+}
+
+.dialogHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.dialogTitle {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.dialogClose {
+  border: 1px solid var(--border-mid);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-family: var(--font);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 5px 8px;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+
+.dialogClose:hover {
+  border-color: var(--border-bright);
+  color: var(--text);
+  background: var(--surface);
+}
+
+.dialogBody {
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }

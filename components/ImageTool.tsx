@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './ImageTool.module.css';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -9,7 +9,11 @@ type Format = 'png' | 'jpeg' | 'webp';
 type CreatorType = 'user' | 'group';
 type BgStatus = 'idle' | 'processing' | 'done' | 'error';
 type PubStatus = 'idle' | 'queued' | 'publishing' | 'done' | 'error';
+type NameStatus = 'idle' | 'loading' | 'done' | 'error';
 type ToastKind = 'ok' | 'err' | 'info';
+type TouchToolMode = 'erase' | 'restore';
+const RBLX_SETTINGS_STORAGE_KEY = 'pixel_forge_publish_settings_v1';
+const RBLX_PRESETS_STORAGE_KEY = 'pixel_forge_publish_presets_v1';
 
 interface ImageItem {
   id: string;
@@ -17,7 +21,10 @@ interface ImageItem {
   processedBlob: Blob | null;
   previewUrl: string;
   fileName: string;
+  originalFileName: string;
+  nameStatus: NameStatus;
   dims: { w: number; h: number } | null;
+  cropRect?: { x: number; y: number; w: number; h: number } | null;
   bgStatus: BgStatus;
   bgError?: string;
   pubStatus: PubStatus;
@@ -28,6 +35,14 @@ interface ImageItem {
 interface ToastState {
   msg: string;
   kind: ToastKind;
+}
+
+interface PublishPreset {
+  id: string;
+  name: string;
+  apiKey: string;
+  creatorType: CreatorType;
+  creatorId: string;
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -77,7 +92,27 @@ function canvasExport(
       if (!ctx) { rej(new Error('Canvas 2D context unavailable')); return; }
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, 0, 0, w, h);
+      const srcW = img.naturalWidth;
+      const srcH = img.naturalHeight;
+      if (!srcW || !srcH) {
+        rej(new Error('Image has invalid dimensions'));
+        return;
+      }
+      // Preserve aspect ratio: "fit" the image inside the requested output canvas
+      // without stretching/distorting.
+      const scale = Math.min(w / srcW, h / srcH);
+      const dw = srcW * scale;
+      const dh = srcH * scale;
+      const dx = (w - dw) / 2;
+      const dy = (h - dh) / 2;
+      // JPEG has no alpha; give it a predictable background.
+      if (fmt === 'jpeg') {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+      } else {
+        ctx.clearRect(0, 0, w, h);
+      }
+      ctx.drawImage(img, dx, dy, dw, dh);
       const mime = fmt === 'jpeg' ? 'image/jpeg' : `image/${fmt}`;
       canvas.toBlob(
         (b) => { b ? res(b) : rej(new Error('canvas.toBlob returned null')); },
@@ -88,6 +123,193 @@ function canvasExport(
     img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('Image load failed')); };
     img.src = url;
   });
+}
+
+function blobToImage(blob: Blob): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Failed to decode image'));
+    };
+    img.src = url;
+  });
+}
+
+function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('Unable to encode image'));
+        return;
+      }
+      resolve(blob);
+    }, 'image/png');
+  });
+}
+
+async function autoCropTransparent(source: Blob, alphaThreshold = 16): Promise<Blob> {
+  // Crops fully transparent borders based on alpha channel so the subject fills the frame.
+  // This prevents "empty" transparent padding from making the subject look smaller after BG removal.
+  const img = await blobToImage(source);
+  const srcW = img.naturalWidth;
+  const srcH = img.naturalHeight;
+  if (!srcW || !srcH) return source;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = srcW;
+  canvas.height = srcH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return source;
+
+  ctx.clearRect(0, 0, srcW, srcH);
+  ctx.drawImage(img, 0, 0);
+
+  const imgData = ctx.getImageData(0, 0, srcW, srcH);
+  const data = imgData.data;
+
+  let minX = srcW;
+  let minY = srcH;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < srcH; y++) {
+    for (let x = 0; x < srcW; x++) {
+      const a = data[(y * srcW + x) * 4 + 3];
+      if (a > alphaThreshold) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  // If everything is transparent (or alpha is too strict), keep original.
+  if (maxX < 0 || maxY < 0) return source;
+
+  const pad = clamp(Math.round(Math.min(srcW, srcH) * 0.02), 1, 12);
+  const sx0 = Math.max(0, minX - pad);
+  const sy0 = Math.max(0, minY - pad);
+  const sx1 = Math.min(srcW - 1, maxX + pad);
+  const sy1 = Math.min(srcH - 1, maxY + pad);
+  const cropW = sx1 - sx0 + 1;
+  const cropH = sy1 - sy0 + 1;
+
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = cropW;
+  cropCanvas.height = cropH;
+  const cropCtx = cropCanvas.getContext('2d');
+  if (!cropCtx) return source;
+
+  cropCtx.clearRect(0, 0, cropW, cropH);
+  cropCtx.drawImage(canvas, sx0, sy0, cropW, cropH, 0, 0, cropW, cropH);
+  return canvasToPngBlob(cropCanvas);
+}
+
+async function autoCropTransparentWithRect(
+  source: Blob,
+  alphaThreshold = 16,
+): Promise<{ blob: Blob; rect: { x: number; y: number; w: number; h: number } | null }> {
+  const img = await blobToImage(source);
+  const srcW = img.naturalWidth;
+  const srcH = img.naturalHeight;
+  if (!srcW || !srcH) return { blob: source, rect: null };
+
+  const canvas = document.createElement('canvas');
+  canvas.width = srcW;
+  canvas.height = srcH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return { blob: source, rect: null };
+
+  ctx.clearRect(0, 0, srcW, srcH);
+  ctx.drawImage(img, 0, 0);
+
+  const imgData = ctx.getImageData(0, 0, srcW, srcH);
+  const data = imgData.data;
+
+  let minX = srcW;
+  let minY = srcH;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < srcH; y++) {
+    for (let x = 0; x < srcW; x++) {
+      const a = data[(y * srcW + x) * 4 + 3];
+      if (a > alphaThreshold) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (maxX < 0 || maxY < 0) return { blob: source, rect: null };
+
+  const pad = clamp(Math.round(Math.min(srcW, srcH) * 0.02), 1, 12);
+  const sx0 = Math.max(0, minX - pad);
+  const sy0 = Math.max(0, minY - pad);
+  const sx1 = Math.min(srcW - 1, maxX + pad);
+  const sy1 = Math.min(srcH - 1, maxY + pad);
+  const cropW = sx1 - sx0 + 1;
+  const cropH = sy1 - sy0 + 1;
+
+  if (cropW === srcW && cropH === srcH && sx0 === 0 && sy0 === 0) {
+    return { blob: source, rect: null };
+  }
+
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = cropW;
+  cropCanvas.height = cropH;
+  const cropCtx = cropCanvas.getContext('2d');
+  if (!cropCtx) return { blob: source, rect: null };
+
+  cropCtx.clearRect(0, 0, cropW, cropH);
+  cropCtx.drawImage(canvas, sx0, sy0, cropW, cropH, 0, 0, cropW, cropH);
+  const blob = await canvasToPngBlob(cropCanvas);
+  return { blob, rect: { x: sx0, y: sy0, w: cropW, h: cropH } };
+}
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, n));
+}
+
+function splitNameAndExt(fileName: string): { base: string; ext: string } {
+  const idx = fileName.lastIndexOf('.');
+  if (idx <= 0 || idx === fileName.length - 1) {
+    return { base: fileName, ext: '' };
+  }
+  return {
+    base: fileName.slice(0, idx),
+    ext: fileName.slice(idx),
+  };
+}
+
+function ensureUniqueFileName(candidate: string, existing: string[]): string {
+  if (!existing.includes(candidate)) return candidate;
+  const { base, ext } = splitNameAndExt(candidate);
+  let n = 2;
+  let next = `${base}_${n}${ext}`;
+  while (existing.includes(next)) {
+    n += 1;
+    next = `${base}_${n}${ext}`;
+  }
+  return next;
+}
+
+function displayNameForItem(item: ImageItem): string {
+  if (item.nameStatus === 'loading') return item.originalFileName;
+  return item.fileName;
+}
+
+function nameClassForItem(item: ImageItem): string {
+  return item.nameStatus === 'loading' ? styles.ghostName : '';
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -108,6 +330,23 @@ export default function ImageTool() {
   // BG removal
   const [bgBusy, setBgBusy] = useState(false);
   const [bgBatchInfo, setBgBatchInfo] = useState<{ current: number; total: number } | null>(null);
+  const [touchUpOpen, setTouchUpOpen] = useState(false);
+  const [touchUpBusy, setTouchUpBusy] = useState(false);
+  const [touchToolMode, setTouchToolMode] = useState<TouchToolMode>('erase');
+  const [brushSize, setBrushSize] = useState(24);
+  const [smartRefine, setSmartRefine] = useState(true);
+  const [smartTolerance, setSmartTolerance] = useState(42);
+  const [spaceDown, setSpaceDown] = useState(false);
+  const [brushPreview, setBrushPreview] = useState<{ x: number; y: number; visible: boolean }>({
+    x: 0,
+    y: 0,
+    visible: false,
+  });
+  const [viewZoom, setViewZoom] = useState(1);
+  const [viewPanX, setViewPanX] = useState(0);
+  const [viewPanY, setViewPanY] = useState(0);
+  const [viewSize, setViewSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  const [previewDims, setPreviewDims] = useState<{ w: number; h: number } | null>(null);
 
   // Single-item BG progress (fake ticker)
   const [bgPct, setBgPct] = useState(0);
@@ -119,10 +358,26 @@ export default function ImageTool() {
   const [creatorId, setCreatorId] = useState('');
   const [publishing, setPublishing] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [publishDialogOpen, setPublishDialogOpen] = useState(false);
+  const [publishDialogMounted, setPublishDialogMounted] = useState(false);
+  const [publishDialogVisible, setPublishDialogVisible] = useState(false);
+  const [presetName, setPresetName] = useState('');
+  const [presets, setPresets] = useState<PublishPreset[]>([]);
+  const [selectedPresetId, setSelectedPresetId] = useState('');
 
   // Toast
   const [toast, setToast] = useState<ToastState | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const publishDialogTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const touchCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const touchViewportRef = useRef<HTMLDivElement | null>(null);
+  const touchActiveRef = useRef(false);
+  const touchOriginalRef = useRef<HTMLImageElement | null>(null);
+  const touchOriginalDataRef = useRef<ImageData | null>(null);
+  const touchPanRef = useRef<{ active: boolean; x: number; y: number }>({ active: false, x: 0, y: 0 });
+  const touchUndoRef = useRef<ImageData[]>([]);
+  const touchRedoRef = useRef<ImageData[]>([]);
+  const touchUpOpenRef = useRef(false);
 
   // Ref that always reflects current items (for cleanup without stale closures)
   const itemsRef = useRef<ImageItem[]>(items);
@@ -137,10 +392,203 @@ export default function ImageTool() {
     };
   }, []);
 
+  useEffect(() => {
+    setTouchUpOpen(false);
+    touchOriginalRef.current = null;
+    touchOriginalDataRef.current = null;
+    touchActiveRef.current = false;
+    touchPanRef.current.active = false;
+    setViewZoom(1);
+    setViewPanX(0);
+    setViewPanY(0);
+    touchUndoRef.current = [];
+    touchRedoRef.current = [];
+    setBrushPreview({ x: 0, y: 0, visible: false });
+  }, [selectedId]);
+
+  useEffect(() => {
+    touchUpOpenRef.current = touchUpOpen;
+  }, [touchUpOpen]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') setSpaceDown(true);
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      ) {
+        return;
+      }
+      if (!touchUpOpenRef.current || !e.ctrlKey || e.altKey || e.key.toLowerCase() !== 'z') return;
+      const canvas = touchCanvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      e.preventDefault();
+      const current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      if (e.shiftKey) {
+        const next = touchRedoRef.current.pop();
+        if (!next) return;
+        touchUndoRef.current.push(current);
+        ctx.putImageData(next, 0, 0);
+        return;
+      }
+      const prev = touchUndoRef.current.pop();
+      if (!prev) return;
+      touchRedoRef.current.push(current);
+      ctx.putImageData(prev, 0, 0);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') setSpaceDown(false);
+    };
+    const onBlur = () => setSpaceDown(false);
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = touchViewportRef.current;
+    if (!el) return;
+    const applySize = () => setViewSize({ w: el.clientWidth, h: el.clientHeight });
+    applySize();
+    const ro = new ResizeObserver(applySize);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [touchUpOpen, selectedId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const item = items.find((i) => i.id === selectedId) ?? null;
+    if (!item) {
+      setPreviewDims(null);
+      return;
+    }
+    const currentBlob = item.processedBlob ?? item.originalBlob;
+    imgDims(currentBlob)
+      .then((d) => {
+        if (!cancelled) setPreviewDims(d);
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewDims(item.dims ?? null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [items, selectedId]);
+
+  useEffect(() => {
+    if (!touchUpOpen || spaceDown) {
+      setBrushPreview((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+    }
+  }, [spaceDown, touchUpOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (publishDialogTimer.current) clearTimeout(publishDialogTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (publishDialogTimer.current) {
+      clearTimeout(publishDialogTimer.current);
+      publishDialogTimer.current = null;
+    }
+    if (publishDialogOpen) {
+      setPublishDialogMounted(true);
+      requestAnimationFrame(() => setPublishDialogVisible(true));
+      return;
+    }
+    setPublishDialogVisible(false);
+    publishDialogTimer.current = setTimeout(() => setPublishDialogMounted(false), 180);
+  }, [publishDialogOpen]);
+
+  useEffect(() => {
+    try {
+      const rawSettings = window.localStorage.getItem(RBLX_SETTINGS_STORAGE_KEY);
+      if (rawSettings) {
+        const parsed = JSON.parse(rawSettings) as Partial<{
+          apiKey: string;
+          creatorType: CreatorType;
+          creatorId: string;
+        }>;
+        if (typeof parsed.apiKey === 'string') setApiKey(parsed.apiKey);
+        if (parsed.creatorType === 'user' || parsed.creatorType === 'group') setCreatorType(parsed.creatorType);
+        if (typeof parsed.creatorId === 'string') setCreatorId(parsed.creatorId);
+      }
+    } catch {
+      // Ignore invalid local storage payloads.
+    }
+
+    try {
+      const rawPresets = window.localStorage.getItem(RBLX_PRESETS_STORAGE_KEY);
+      if (rawPresets) {
+        const parsed = JSON.parse(rawPresets) as unknown;
+        if (Array.isArray(parsed)) {
+          const valid = parsed
+            .map((p) => (p as Partial<PublishPreset>))
+            .filter((p): p is PublishPreset =>
+              typeof p.id === 'string' &&
+              typeof p.name === 'string' &&
+              typeof p.apiKey === 'string' &&
+              (p.creatorType === 'user' || p.creatorType === 'group') &&
+              typeof p.creatorId === 'string',
+            );
+          setPresets(valid);
+        }
+      }
+    } catch {
+      // Ignore invalid local storage payloads.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        RBLX_SETTINGS_STORAGE_KEY,
+        JSON.stringify({ apiKey, creatorType, creatorId }),
+      );
+    } catch {
+      // Ignore localStorage write errors (private mode / quota).
+    }
+  }, [apiKey, creatorType, creatorId]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(RBLX_PRESETS_STORAGE_KEY, JSON.stringify(presets));
+    } catch {
+      // Ignore localStorage write errors (private mode / quota).
+    }
+  }, [presets]);
+
   // ── Derived ──────────────────────────────────────────────────────────────────
 
   const selectedItem = items.find((i) => i.id === selectedId) ?? null;
   const hasItems = items.length > 0;
+  const viewBase = useMemo(() => {
+    const w = previewDims?.w ?? 0;
+    const h = previewDims?.h ?? 0;
+    if (w <= 0 || h <= 0 || viewSize.w <= 0 || viewSize.h <= 0) {
+      return { fitScale: 1, offsetX: 0, offsetY: 0, finalScale: viewZoom };
+    }
+    const fitScale = Math.min(viewSize.w / w, viewSize.h / h);
+    const offsetX = (viewSize.w - w * fitScale) / 2;
+    const offsetY = (viewSize.h - h * fitScale) / 2;
+    return {
+      fitScale,
+      offsetX,
+      offsetY,
+      finalScale: fitScale * viewZoom,
+    };
+  }, [previewDims, viewSize.h, viewSize.w, viewZoom]);
+
+  const brushPx = Math.max(1, Math.round(brushSize * viewBase.finalScale * 100) / 100);
 
   function activeBlob(item: ImageItem): Blob {
     return item.processedBlob ?? item.originalBlob;
@@ -160,6 +608,53 @@ export default function ImageTool() {
     setItems((prev) => prev.map((i) => (i.id === id ? { ...i, ...patch } : i)));
   }
 
+  const autoNameOne = useCallback(async (id: string, source: Blob, originalName: string) => {
+    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, nameStatus: 'loading' as NameStatus } : i)));
+    try {
+      const fd = new FormData();
+      fd.append('image', source, 'source.png');
+      const res = await fetch('/api/auto-name', { method: 'POST', body: fd });
+      if (!res.ok) {
+        setItems((prev) =>
+          prev.map((i) =>
+            i.id === id ? { ...i, fileName: i.originalFileName, nameStatus: 'error' as NameStatus } : i,
+          ),
+        );
+        return;
+      }
+      const data = (await res.json()) as { name?: string };
+      const name = (data.name ?? '').trim();
+      if (!name) {
+        setItems((prev) =>
+          prev.map((i) =>
+            i.id === id ? { ...i, fileName: i.originalFileName, nameStatus: 'error' as NameStatus } : i,
+          ),
+        );
+        return;
+      }
+
+      setItems((prev) => {
+        const target = prev.find((i) => i.id === id);
+        if (!target) return prev;
+
+        const ext = splitNameAndExt(originalName).ext;
+        const nextBase = name;
+        const candidate = `${nextBase}${ext}`;
+        const existing = prev.filter((i) => i.id !== id).map((i) => i.fileName);
+        const unique = ensureUniqueFileName(candidate, existing);
+        return prev.map((i) =>
+          i.id === id ? { ...i, fileName: unique, nameStatus: 'done' as NameStatus } : i,
+        );
+      });
+    } catch {
+      setItems((prev) =>
+        prev.map((i) =>
+          i.id === id ? { ...i, fileName: i.originalFileName, nameStatus: 'error' as NameStatus } : i,
+        ),
+      );
+    }
+  }, []);
+
   // ── Add images ────────────────────────────────────────────────────────────────
 
   const addImages = useCallback(async (files: FileList | File[]) => {
@@ -178,6 +673,8 @@ export default function ImageTool() {
           processedBlob: null,
           previewUrl,
           fileName: f.name,
+          originalFileName: f.name,
+          nameStatus: 'loading' as NameStatus,
           dims,
           bgStatus: 'idle' as BgStatus,
           pubStatus: 'idle' as PubStatus,
@@ -192,7 +689,12 @@ export default function ImageTool() {
 
     // Auto-select the first newly added item if nothing selected
     setSelectedId((prev) => prev ?? newItems[0].id);
-  }, []);
+
+    // Best-effort AI naming in background.
+    for (const item of newItems) {
+      void autoNameOne(item.id, item.originalBlob, item.fileName);
+    }
+  }, [autoNameOne]);
 
   // ── Remove item ───────────────────────────────────────────────────────────────
 
@@ -286,13 +788,26 @@ export default function ImageTool() {
 
       const result = await res.blob();
 
+      // After BG removal, crop transparent borders so the subject fits the frame.
+      // Also keeps the subject proportions stable through export.
+      let processed = result;
+      let cropRect: ImageItem['cropRect'] = null;
+      try {
+        const cropped = await autoCropTransparentWithRect(result);
+        processed = cropped.blob;
+        cropRect = cropped.rect;
+      } catch {
+        processed = result;
+        cropRect = null;
+      }
+
       // Revoke old preview URL and create new one
       setItems((prev) =>
         prev.map((i) => {
           if (i.id !== id) return i;
           URL.revokeObjectURL(i.previewUrl);
-          const newUrl = URL.createObjectURL(result);
-          return { ...i, processedBlob: result, previewUrl: newUrl, bgStatus: 'done' };
+          const newUrl = URL.createObjectURL(processed);
+          return { ...i, processedBlob: processed, previewUrl: newUrl, bgStatus: 'done', cropRect };
         }),
       );
 
@@ -305,6 +820,370 @@ export default function ImageTool() {
       if (standalone) { setBgBusy(false); setBgPct(0); }
     }
   }, [showToast]);
+
+  const openTouchUp = useCallback(async () => {
+    const item = selectedItem;
+    if (!item) return;
+    if (!item.processedBlob) {
+      showToast('Run Remove BG first, then use touch-up brush', 'info');
+      return;
+    }
+    setTouchUpBusy(true);
+    try {
+      const [processedImg, originalImg] = await Promise.all([
+        blobToImage(item.processedBlob),
+        blobToImage(item.originalBlob),
+      ]);
+      setTouchUpOpen(true);
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const canvas = touchCanvasRef.current;
+      if (!canvas) throw new Error('Touch-up canvas unavailable');
+      canvas.width = processedImg.naturalWidth;
+      canvas.height = processedImg.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas 2D context unavailable');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(processedImg, 0, 0);
+      touchOriginalRef.current = originalImg;
+      const sourceCanvas = document.createElement('canvas');
+      const crop = item.cropRect ?? null;
+      const sourceW = crop ? crop.w : originalImg.naturalWidth;
+      const sourceH = crop ? crop.h : originalImg.naturalHeight;
+      sourceCanvas.width = sourceW;
+      sourceCanvas.height = sourceH;
+      const sourceCtx = sourceCanvas.getContext('2d');
+      if (!sourceCtx) throw new Error('Canvas 2D context unavailable');
+      if (crop) {
+        // Keep original pixel buffer aligned with the *cropped* processed canvas.
+        // Smart refine + restore assume canvas coords match originalData coords.
+        sourceCtx.drawImage(
+          originalImg,
+          crop.x,
+          crop.y,
+          crop.w,
+          crop.h,
+          0,
+          0,
+          crop.w,
+          crop.h,
+        );
+      } else {
+        sourceCtx.drawImage(originalImg, 0, 0);
+      }
+      touchOriginalDataRef.current = sourceCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+      setTouchToolMode('erase');
+      setViewZoom(1);
+      setViewPanX(0);
+      setViewPanY(0);
+      touchUndoRef.current = [];
+      touchRedoRef.current = [];
+      setBrushPreview({ x: 0, y: 0, visible: false });
+      setTouchUpOpen(true);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Unable to open touch-up editor', 'err');
+    } finally {
+      setTouchUpBusy(false);
+    }
+  }, [selectedItem, showToast]);
+
+  const screenToCanvas = useCallback((clientX: number, clientY: number) => {
+    const viewport = touchViewportRef.current;
+    const canvas = touchCanvasRef.current;
+    if (!viewport || !canvas) return null;
+    const rect = viewport.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const x = (clientX - rect.left - (viewBase.offsetX + viewPanX)) / viewBase.finalScale;
+    const y = (clientY - rect.top - (viewBase.offsetY + viewPanY)) / viewBase.finalScale;
+    return { x, y };
+  }, [viewBase.finalScale, viewBase.offsetX, viewBase.offsetY, viewPanX, viewPanY]);
+
+  const updateBrushPreview = useCallback((clientX: number, clientY: number) => {
+    const viewport = touchViewportRef.current;
+    if (!viewport || !touchUpOpen || spaceDown) {
+      setBrushPreview((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+      return;
+    }
+    const rect = viewport.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
+      setBrushPreview((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+      return;
+    }
+    setBrushPreview({ x, y, visible: true });
+  }, [spaceDown, touchUpOpen]);
+
+  const paintAt = useCallback((clientX: number, clientY: number) => {
+    const canvas = touchCanvasRef.current;
+    if (!canvas) return;
+    const point = screenToCanvas(clientX, clientY);
+    if (!point) return;
+    const x = point.x;
+    const y = point.y;
+    if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return;
+
+    const radius = Math.max(0.5, brushSize / 2);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const originalImg = touchOriginalRef.current;
+    const originalData = touchOriginalDataRef.current;
+
+    if (!smartRefine || !originalData || !originalImg) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.closePath();
+      ctx.clip();
+      if (touchToolMode === 'erase') {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.fillStyle = '#000';
+        ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+      } else if (touchToolMode === 'restore') {
+        // Keep manual restore soft so tiny fixes blend with existing antialiasing.
+        if (!originalData) {
+          // Without the original pixel buffer we can't restore colors; fall back to no-op.
+        } else {
+        const bx = clamp(Math.floor(x - radius - 1), 0, canvas.width - 1);
+        const by = clamp(Math.floor(y - radius - 1), 0, canvas.height - 1);
+        const ex = clamp(Math.ceil(x + radius + 1), 0, canvas.width - 1);
+        const ey = clamp(Math.ceil(y + radius + 1), 0, canvas.height - 1);
+        const bw = ex - bx + 1;
+        const bh = ey - by + 1;
+        const patch = ctx.getImageData(bx, by, bw, bh);
+        const p = patch.data;
+        const source = originalData.data;
+        const invRadius = 1 / Math.max(radius, 0.0001);
+        for (let py = 0; py < bh; py++) {
+          for (let px = 0; px < bw; px++) {
+            const gx = bx + px;
+            const gy = by + py;
+            const dx = gx - x;
+            const dy = gy - y;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d > radius) continue;
+            const t = 1 - d * invRadius;
+            const strength = t * t;
+            const gi = (gy * canvas.width + gx) * 4;
+            const pi = (py * bw + px) * 4;
+            const mix = 0.72 * strength;
+            p[pi] = Math.round(p[pi] + (source[gi] - p[pi]) * mix);
+            p[pi + 1] = Math.round(p[pi + 1] + (source[gi + 1] - p[pi + 1]) * mix);
+            p[pi + 2] = Math.round(p[pi + 2] + (source[gi + 2] - p[pi + 2]) * mix);
+            p[pi + 3] = clamp(Math.round(p[pi + 3] + (source[gi + 3] - p[pi + 3]) * mix), 0, 255);
+          }
+        }
+        ctx.putImageData(patch, bx, by);
+        }
+      }
+      ctx.restore();
+      return;
+    }
+
+    const bx = clamp(Math.floor(x - radius - 1), 0, canvas.width - 1);
+    const by = clamp(Math.floor(y - radius - 1), 0, canvas.height - 1);
+    const ex = clamp(Math.ceil(x + radius + 1), 0, canvas.width - 1);
+    const ey = clamp(Math.ceil(y + radius + 1), 0, canvas.height - 1);
+    const bw = ex - bx + 1;
+    const bh = ey - by + 1;
+    const patch = ctx.getImageData(bx, by, bw, bh);
+    const p = patch.data;
+    const source = originalData.data;
+    const cx = Math.round(x);
+    const cy = Math.round(y);
+    const seedX = clamp(cx - bx, 0, bw - 1);
+    const seedY = clamp(cy - by, 0, bh - 1);
+    const seedGlobalIdx = (cy * canvas.width + cx) * 4;
+    const seedR = source[seedGlobalIdx];
+    const seedG = source[seedGlobalIdx + 1];
+    const seedB = source[seedGlobalIdx + 2];
+    const tol = clamp(smartTolerance, 8, 96);
+    const tol2 = tol * tol;
+
+    const visited = new Uint8Array(bw * bh);
+    const qx = new Int32Array(bw * bh);
+    const qy = new Int32Array(bw * bh);
+    let head = 0;
+    let tail = 0;
+    qx[tail] = seedX;
+    qy[tail] = seedY;
+    tail++;
+
+    while (head < tail) {
+      const px = qx[head];
+      const py = qy[head];
+      head++;
+      const local = py * bw + px;
+      if (visited[local]) continue;
+      visited[local] = 1;
+
+      const gx = bx + px;
+      const gy = by + py;
+      const dx = gx - x;
+      const dy = gy - y;
+      if ((dx * dx + dy * dy) > radius * radius) continue;
+
+      const globalIdx = (gy * canvas.width + gx) * 4;
+      const dr = source[globalIdx] - seedR;
+      const dg = source[globalIdx + 1] - seedG;
+      const db = source[globalIdx + 2] - seedB;
+      if ((dr * dr + dg * dg + db * db) > tol2) continue;
+
+      const pi = local * 4;
+      const radial = 1 - Math.sqrt(dx * dx + dy * dy) / Math.max(radius, 0.0001);
+      const colorSim = 1 - Math.min(1, Math.sqrt(dr * dr + dg * dg + db * db) / Math.max(tol, 1));
+      const strength = clamp(radial * radial * (0.35 + colorSim * 0.65), 0, 1);
+
+      if (touchToolMode === 'erase') {
+        // Soften alpha edits near the selection edge to avoid hard cut lines.
+        const keep = 1 - 0.82 * strength;
+        p[pi + 3] = clamp(Math.round(p[pi + 3] * keep), 0, 255);
+      } else if (touchToolMode === 'restore') {
+        const mix = 0.78 * strength;
+        p[pi] = Math.round(p[pi] + (source[globalIdx] - p[pi]) * mix);
+        p[pi + 1] = Math.round(p[pi + 1] + (source[globalIdx + 1] - p[pi + 1]) * mix);
+        p[pi + 2] = Math.round(p[pi + 2] + (source[globalIdx + 2] - p[pi + 2]) * mix);
+        p[pi + 3] = clamp(
+          Math.round(p[pi + 3] + (source[globalIdx + 3] - p[pi + 3]) * (0.9 * mix)),
+          0,
+          255,
+        );
+      }
+
+      if (px > 0) { qx[tail] = px - 1; qy[tail] = py; tail++; }
+      if (px < bw - 1) { qx[tail] = px + 1; qy[tail] = py; tail++; }
+      if (py > 0) { qx[tail] = px; qy[tail] = py - 1; tail++; }
+      if (py < bh - 1) { qx[tail] = px; qy[tail] = py + 1; tail++; }
+    }
+
+    ctx.putImageData(patch, bx, by);
+  }, [brushSize, screenToCanvas, smartRefine, smartTolerance, touchToolMode]);
+
+  const zoomAt = useCallback((factor: number, clientX?: number, clientY?: number) => {
+    const viewport = touchViewportRef.current;
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    const anchorX = clientX ?? rect.left + rect.width / 2;
+    const anchorY = clientY ?? rect.top + rect.height / 2;
+    const newZoom = clamp(viewZoom * factor, 0.3, 8);
+    const canvasX = (anchorX - rect.left - (viewBase.offsetX + viewPanX)) / viewBase.finalScale;
+    const canvasY = (anchorY - rect.top - (viewBase.offsetY + viewPanY)) / viewBase.finalScale;
+    setViewZoom(newZoom);
+    setViewPanX(anchorX - rect.left - viewBase.offsetX - canvasX * (viewBase.fitScale * newZoom));
+    setViewPanY(anchorY - rect.top - viewBase.offsetY - canvasY * (viewBase.fitScale * newZoom));
+  }, [viewBase.finalScale, viewBase.fitScale, viewBase.offsetX, viewBase.offsetY, viewPanX, viewPanY, viewZoom]);
+
+  const startPan = useCallback((clientX: number, clientY: number) => {
+    touchPanRef.current = { active: true, x: clientX, y: clientY };
+  }, []);
+
+  const movePan = useCallback((clientX: number, clientY: number) => {
+    if (!touchPanRef.current.active) return;
+    const dx = clientX - touchPanRef.current.x;
+    const dy = clientY - touchPanRef.current.y;
+    touchPanRef.current.x = clientX;
+    touchPanRef.current.y = clientY;
+    setViewPanX((v) => v + dx);
+    setViewPanY((v) => v + dy);
+  }, []);
+
+  const stopPan = useCallback(() => {
+    touchPanRef.current.active = false;
+  }, []);
+
+  const snapshotTouchCanvas = useCallback(() => {
+    const canvas = touchCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    touchUndoRef.current.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+    if (touchUndoRef.current.length > 25) {
+      touchUndoRef.current.shift();
+    }
+    touchRedoRef.current = [];
+  }, []);
+
+  const handleTouchWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (spaceDown) {
+      setViewPanX((v) => v - e.deltaX);
+      setViewPanY((v) => v - e.deltaY);
+      return;
+    }
+    zoomAt(e.deltaY > 0 ? 0.9 : 1.1, e.clientX, e.clientY);
+  }, [spaceDown, zoomAt]);
+
+  const handleTouchPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    (e.target as HTMLCanvasElement).setPointerCapture(e.pointerId);
+    updateBrushPreview(e.clientX, e.clientY);
+    if (spaceDown || e.button === 1 || e.button === 2) {
+      startPan(e.clientX, e.clientY);
+      return;
+    }
+    snapshotTouchCanvas();
+    touchActiveRef.current = true;
+    paintAt(e.clientX, e.clientY);
+  }, [paintAt, snapshotTouchCanvas, spaceDown, startPan, updateBrushPreview]);
+
+  const handleTouchPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    updateBrushPreview(e.clientX, e.clientY);
+    if (touchPanRef.current.active) {
+      movePan(e.clientX, e.clientY);
+      return;
+    }
+    if (!touchActiveRef.current) return;
+    paintAt(e.clientX, e.clientY);
+  }, [movePan, paintAt, updateBrushPreview]);
+
+  const handleTouchPointerUp = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    (e.target as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+    touchActiveRef.current = false;
+    stopPan();
+  }, [stopPan]);
+
+  const handleTouchPointerLeave = useCallback(() => {
+    touchActiveRef.current = false;
+    stopPan();
+    setBrushPreview({ x: 0, y: 0, visible: false });
+  }, [stopPan]);
+
+  const applyTouchUp = useCallback(async () => {
+    if (!selectedItem) return;
+    const canvas = touchCanvasRef.current;
+    if (!canvas) return;
+    try {
+      const result = await canvasToPngBlob(canvas);
+      setItems((prev) =>
+        prev.map((i) => {
+          if (i.id !== selectedItem.id) return i;
+          URL.revokeObjectURL(i.previewUrl);
+          return {
+            ...i,
+            processedBlob: result,
+            previewUrl: URL.createObjectURL(result),
+            bgStatus: 'done',
+          };
+        }),
+      );
+      setTouchUpOpen(false);
+      touchUndoRef.current = [];
+      touchRedoRef.current = [];
+      setBrushPreview({ x: 0, y: 0, visible: false });
+      showToast('Touch-up applied', 'ok');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Failed to apply touch-up', 'err');
+    }
+  }, [selectedItem, showToast]);
+
+  const cancelTouchUp = useCallback(() => {
+    setTouchUpOpen(false);
+    touchOriginalRef.current = null;
+    touchOriginalDataRef.current = null;
+    touchActiveRef.current = false;
+    stopPan();
+    touchUndoRef.current = [];
+    touchRedoRef.current = [];
+    setBrushPreview({ x: 0, y: 0, visible: false });
+  }, [stopPan]);
 
   const removeBgAll = useCallback(async () => {
     const toProcess = itemsRef.current.filter((i) => i.bgStatus === 'idle' || i.bgStatus === 'error');
@@ -326,8 +1205,7 @@ export default function ImageTool() {
   // ── Export ────────────────────────────────────────────────────────────────────
 
   const getExportBlob = useCallback(async (item: ImageItem): Promise<Blob> => {
-    const exportFmt: Format = item.processedBlob ? 'png' : format;
-    return canvasExport(activeBlob(item), tw, th, exportFmt, quality);
+    return canvasExport(activeBlob(item), tw, th, format, quality);
   }, [format, tw, th, quality]);
 
   // ── Download ──────────────────────────────────────────────────────────────────
@@ -337,7 +1215,7 @@ export default function ImageTool() {
     if (!item) return;
     try {
       const blob = await getExportBlob(item);
-      const ext = item.processedBlob ? 'png' : format;
+      const ext = format;
       const base = item.fileName.replace(/\.[^.]+$/, '') || 'image';
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -391,12 +1269,13 @@ export default function ImageTool() {
       try {
         const blob = await getExportBlob(item);
         const assetName = item.fileName.replace(/\.[^.]+$/, '') || 'Uploaded Icon';
+        const ext = format;
         const fd = new FormData();
         fd.append('apiKey', apiKey.trim());
         fd.append('creatorType', creatorType);
         fd.append('creatorId', creatorId.trim());
         fd.append('assetName', assetName);
-        fd.append('image', blob, 'icon.png');
+        fd.append('image', blob, `icon.${ext}`);
 
         const res = await fetch('/api/roblox-upload', { method: 'POST', body: fd });
         const data: { assetId?: string | number; error?: string; success?: boolean } = await res.json();
@@ -429,7 +1308,7 @@ export default function ImageTool() {
 
     setPublishing(false);
     showToast('Publish complete', 'ok');
-  }, [items, apiKey, creatorType, creatorId, getExportBlob, showToast]);
+  }, [items, apiKey, creatorType, creatorId, format, getExportBlob, showToast]);
 
   const copyAssetId = useCallback((id: string) => {
     const item = items.find((i) => i.id === id);
@@ -447,6 +1326,94 @@ export default function ImageTool() {
     }
   }, [items, showToast]);
 
+  const applyPreset = useCallback((presetId: string) => {
+    setSelectedPresetId(presetId);
+    if (!presetId) {
+      setPresetName('');
+      return;
+    }
+    const preset = presets.find((p) => p.id === presetId);
+    if (!preset) return;
+    setApiKey(preset.apiKey);
+    setCreatorType(preset.creatorType);
+    setCreatorId(preset.creatorId);
+    setPresetName(preset.name);
+    showToast(`Loaded preset: ${preset.name}`, 'ok');
+  }, [presets, showToast]);
+
+  const saveNewPreset = useCallback(() => {
+    const name = presetName.trim();
+    if (!name) {
+      showToast('Enter a preset name', 'err');
+      return;
+    }
+    if (!apiKey.trim()) {
+      showToast('Enter an API key first', 'err');
+      return;
+    }
+    if (!creatorId.trim()) {
+      showToast('Enter a creator ID first', 'err');
+      return;
+    }
+
+    const nextPreset: PublishPreset = {
+      id: uid(),
+      name,
+      apiKey: apiKey.trim(),
+      creatorType,
+      creatorId: creatorId.trim(),
+    };
+    setPresets((prev) => [...prev, nextPreset]);
+    setSelectedPresetId(nextPreset.id);
+    setPresetName('');
+    showToast(`Preset saved: ${name}`, 'ok');
+  }, [presetName, apiKey, creatorType, creatorId, showToast]);
+
+  const updatePreset = useCallback(() => {
+    if (!selectedPresetId) {
+      showToast('Select a preset to update', 'info');
+      return;
+    }
+    const name = presetName.trim();
+    if (!name) {
+      showToast('Enter a preset name', 'err');
+      return;
+    }
+    if (!apiKey.trim()) {
+      showToast('Enter an API key first', 'err');
+      return;
+    }
+    if (!creatorId.trim()) {
+      showToast('Enter a creator ID first', 'err');
+      return;
+    }
+    setPresets((prev) =>
+      prev.map((preset) =>
+        preset.id === selectedPresetId
+          ? {
+              ...preset,
+              name,
+              apiKey: apiKey.trim(),
+              creatorType,
+              creatorId: creatorId.trim(),
+            }
+          : preset,
+      ),
+    );
+    showToast(`Updated preset: ${name}`, 'ok');
+  }, [selectedPresetId, presetName, apiKey, creatorType, creatorId, showToast]);
+
+  const deletePreset = useCallback(() => {
+    if (!selectedPresetId) {
+      showToast('Select a preset to delete', 'info');
+      return;
+    }
+    const target = presets.find((p) => p.id === selectedPresetId);
+    setPresets((prev) => prev.filter((p) => p.id !== selectedPresetId));
+    setSelectedPresetId('');
+    if (target) showToast(`Deleted preset: ${target.name}`, 'ok');
+  }, [presets, selectedPresetId, showToast]);
+
   // ── Helpers ───────────────────────────────────────────────────────────────────
 
   function pubStatusClass(s: PubStatus): string {
@@ -461,6 +1428,8 @@ export default function ImageTool() {
 
   const hasSomeAssetId = items.some((i) => i.pubAssetId);
   const selectedBg = selectedItem?.processedBlob != null;
+  const finishedCount = items.filter((i) => i.pubStatus === 'done').length;
+  const closePublishDialog = useCallback(() => setPublishDialogOpen(false), []);
 
   // ── Render ────────────────────────────────────────────────────────────────────
 
@@ -511,12 +1480,18 @@ export default function ImageTool() {
                 <div className={styles.thumbImgWrap}>
                   <img
                     src={item.previewUrl}
-                    alt={item.fileName}
+                    alt={displayNameForItem(item)}
                     className={styles.thumbImgEl}
                   />
                 </div>
                 <div className={styles.thumbFooter}>
-                  <span className={styles.thumbFileName}>{item.fileName}</span>
+                  <span
+                    className={`${styles.thumbFileName}${
+                      nameClassForItem(item) ? ` ${nameClassForItem(item)}` : ''
+                    }`}
+                  >
+                    {displayNameForItem(item)}
+                  </span>
                   <span
                     className={
                       item.bgStatus === 'done'
@@ -556,12 +1531,21 @@ export default function ImageTool() {
         {/* ── Preview Panel ── */}
         <div className={styles.previewPanel}>
           <div className={styles.previewBar}>
-            <span className={styles.barLabel}>
-              {selectedItem ? selectedItem.fileName : 'Preview'}
+            <span
+              className={`${styles.barLabel}${
+                selectedItem && nameClassForItem(selectedItem) ? ` ${nameClassForItem(selectedItem)}` : ''
+              }`}
+            >
+              {selectedItem ? displayNameForItem(selectedItem) : 'Preview'}
             </span>
-            {selectedBg && (
-              <span className={styles.bgRemovedTag}>● BG Removed</span>
-            )}
+            <div className={styles.previewMeta}>
+              {selectedItem && (
+                <span className={styles.zoomTag}>{Math.round(viewZoom * 100)}%</span>
+              )}
+              {selectedBg && (
+                <span className={styles.bgRemovedTag}>● BG Removed</span>
+              )}
+            </div>
           </div>
           <div
             className={`${styles.previewArea}${isDragging ? ` ${styles.dragging}` : ''}`}
@@ -570,12 +1554,64 @@ export default function ImageTool() {
             onDrop={onDrop}
           >
             {selectedItem ? (
-              <img
-                key={selectedItem.previewUrl}
-                src={selectedItem.previewUrl}
-                alt="Preview"
-                className={styles.previewImg}
-              />
+              <div
+                ref={touchViewportRef}
+                className={`${styles.touchWrap}${spaceDown ? ` ${styles.spacePan}` : ''}`}
+                onWheel={handleTouchWheel}
+                onContextMenu={(e) => e.preventDefault()}
+              >
+                {touchUpOpen ? (
+                  <>
+                    <canvas
+                      ref={touchCanvasRef}
+                      className={styles.touchCanvas}
+                      style={{
+                        transform: `translate(${viewBase.offsetX + viewPanX}px, ${viewBase.offsetY + viewPanY}px) scale(${viewBase.finalScale})`,
+                        transformOrigin: 'top left',
+                      }}
+                      onPointerDown={handleTouchPointerDown}
+                      onPointerMove={handleTouchPointerMove}
+                      onPointerUp={handleTouchPointerUp}
+                      onPointerLeave={handleTouchPointerLeave}
+                    />
+                    <div
+                      className={styles.brushPreview}
+                      style={{
+                        left: `${brushPreview.x}px`,
+                        top: `${brushPreview.y}px`,
+                        width: `${brushPx}px`,
+                        height: `${brushPx}px`,
+                        opacity: brushPreview.visible ? 1 : 0,
+                      }}
+                    />
+                  </>
+                ) : (
+                  <img
+                    key={selectedItem.previewUrl}
+                    src={selectedItem.previewUrl}
+                    alt="Preview"
+                    className={styles.previewNavImg}
+                    style={{
+                      transform: `translate(${viewBase.offsetX + viewPanX}px, ${viewBase.offsetY + viewPanY}px) scale(${viewBase.finalScale})`,
+                      transformOrigin: 'top left',
+                    }}
+                    onPointerDown={(e) => {
+                      if (!spaceDown && e.button !== 1 && e.button !== 2) return;
+                      (e.target as HTMLImageElement).setPointerCapture(e.pointerId);
+                      startPan(e.clientX, e.clientY);
+                    }}
+                    onPointerMove={(e) => {
+                      if (!touchPanRef.current.active) return;
+                      movePan(e.clientX, e.clientY);
+                    }}
+                    onPointerUp={(e) => {
+                      (e.target as HTMLImageElement).releasePointerCapture(e.pointerId);
+                      stopPan();
+                    }}
+                    onPointerLeave={stopPan}
+                  />
+                )}
+              </div>
             ) : (
               <div className={styles.emptyState}>
                 <div className={styles.emptyIcon}>⬡</div>
@@ -680,29 +1716,111 @@ export default function ImageTool() {
               <span className={styles.sectionNum}>02</span>
               <span className={styles.sectionTitle}>Remove Background</span>
             </div>
-            <div className={styles.sectionBody}>
+            <div className={`${styles.sectionBody} ${styles.sectionBodyComfort}`}>
 
-              <div className={styles.btnGroup}>
+              <div className={`${styles.btnGroup} ${styles.btnGroupLoose}`}>
                 <button
                   className={`${styles.btn} ${styles.btnPrimary} ${styles.btnFull}`}
-                  onClick={removeBgAll}
-                  disabled={!hasItems || bgBusy}
-                >
-                  {bgBusy && bgBatchInfo ? '◌ Processing…' : '⬡ Remove BG from All'}
-                </button>
-                <button
-                  className={styles.btn}
                   onClick={() => selectedId && removeBgOne(selectedId)}
-                  disabled={
-                    !selectedItem ||
-                    bgBusy ||
-                    selectedItem.bgStatus === 'processing'
-                  }
+                  disabled={!selectedItem || bgBusy || selectedItem.bgStatus === 'processing'}
                   title="Process only the selected image"
                 >
-                  Selected
+                  {selectedItem?.bgStatus === 'processing' ? '◌ Processing…' : '⬡ Remove BG'}
+                </button>
+                <button
+                  className={`${styles.btn} ${styles.btnFull}`}
+                  onClick={removeBgAll}
+                  disabled={
+                    !hasItems ||
+                    bgBusy
+                  }
+                  title="Batch process all queued images"
+                >
+                  {bgBusy && bgBatchInfo ? '◌ Processing All…' : 'Remove BG from All'}
                 </button>
               </div>
+
+              {!touchUpOpen ? (
+                <button
+                  className={`${styles.btn} ${styles.btnFull}`}
+                  onClick={openTouchUp}
+                  disabled={!selectedItem || !selectedItem.processedBlob || bgBusy || touchUpBusy}
+                  title="Manually erase leftovers or restore missing spots"
+                >
+                  {touchUpBusy ? '◌ Opening Brush…' : '✎ Touch Up (Brush)'}
+                </button>
+              ) : (
+                <div className={styles.touchToolsCard}>
+                  <div className={styles.touchCardHead}>
+                    <span className={styles.touchCardTitle}>Touch-up</span>
+                    <span className={styles.touchCardSub}>Erase or restore on the preview</span>
+                  </div>
+                  <div className={styles.touchTools}>
+                    <div className={styles.touchField}>
+                      <label className={styles.label}>Tool</label>
+                      <div className={styles.toggleGroup}>
+                        <button
+                          className={`${styles.toggleBtn}${touchToolMode === 'erase' ? ` ${styles.active}` : ''}`}
+                          onClick={() => setTouchToolMode('erase')}
+                        >
+                          Erase
+                        </button>
+                        <button
+                          className={`${styles.toggleBtn}${touchToolMode === 'restore' ? ` ${styles.active}` : ''}`}
+                          onClick={() => setTouchToolMode('restore')}
+                        >
+                          Restore
+                        </button>
+                      </div>
+                    </div>
+                    <div className={`${styles.sliderGroup} ${styles.sliderGroupComfort}`}>
+                      <div className={styles.sliderLabelRowComfort}>
+                        <label className={styles.labelComfort}>Brush size</label>
+                        <span className={styles.sliderValPill}>{brushSize}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        className={`${styles.slider} ${styles.sliderComfort}`}
+                        min={1}
+                        max={80}
+                        value={brushSize}
+                        onChange={(e) => setBrushSize(Number(e.target.value))}
+                      />
+                    </div>
+                    <label className={styles.smartToggleComfort}>
+                      <input
+                        type="checkbox"
+                        checked={smartRefine}
+                        onChange={(e) => setSmartRefine(e.target.checked)}
+                      />
+                      <span>Smart area refine</span>
+                    </label>
+                    <div className={`${styles.sliderGroup} ${styles.sliderGroupComfort}`}>
+                      <div className={styles.sliderLabelRowComfort}>
+                        <label className={styles.labelComfort}>Select tolerance</label>
+                        <span className={styles.sliderValPill}>{smartTolerance}</span>
+                      </div>
+                      <input
+                        type="range"
+                        className={`${styles.slider} ${styles.sliderComfort}`}
+                        min={8}
+                        max={96}
+                        value={smartTolerance}
+                        disabled={!smartRefine}
+                        onChange={(e) => setSmartTolerance(Number(e.target.value))}
+                      />
+                    </div>
+                    <div className={styles.touchActionsRow}>
+                      <button className={`${styles.btn} ${styles.btnPrimary} ${styles.btnFull}`} onClick={applyTouchUp}>
+                        Apply Touch-Up
+                      </button>
+                      <button className={`${styles.btn} ${styles.btnFull}`} onClick={cancelTouchUp}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {bgBatchInfo && (
                 <div className={styles.batchInfo}>
@@ -713,9 +1831,11 @@ export default function ImageTool() {
                 </div>
               )}
 
-              <p className={styles.hint}>
-                Processed server-side. Results appear per image in the queue.
-              </p>
+              {touchUpOpen && (
+                <p className={styles.hintComfort}>
+                  Smart refine grows the edit to similar colors inside the brush. Use smaller tolerance for precise edges.
+                </p>
+              )}
 
             </div>
           </div>
@@ -726,135 +1846,32 @@ export default function ImageTool() {
               <span className={styles.sectionNum}>03</span>
               <span className={styles.sectionTitle}>Publish to Roblox</span>
             </div>
-
-            {/* Help toggle */}
-            <button
-              className={styles.helpToggle}
-              onClick={() => setShowHelp(!showHelp)}
-            >
-              <span>How does this work?</span>
-              <span className={`${styles.helpToggleChevron}${showHelp ? ` ${styles.open}` : ''}`}>▾</span>
-            </button>
-
-            {showHelp && (
-              <div className={styles.helpCard}>
-                <div className={styles.helpStepRow}>
-                  <span className={styles.helpStepNum}>1.</span>
-                  <span>
-                    Create an API key at{' '}
-                    <button
-                      className={styles.helpLinkBtn}
-                      onClick={() => window.open('https://create.roblox.com/dashboard/credentials', '_blank')}
-                    >
-                      Creator Hub
-                    </button>
-                    . Enable <strong>Assets: Write</strong> permission.
-                  </span>
-                </div>
-                <div className={styles.helpStepRow}>
-                  <span className={styles.helpStepNum}>2.</span>
-                  <span>
-                    Find your User ID in your Roblox profile URL:{' '}
-                    <em>roblox.com/users/[YOUR_ID]/profile</em>. Or use a Group ID for group assets.
-                  </span>
-                </div>
-                <div className={styles.helpStepRow}>
-                  <span className={styles.helpStepNum}>3.</span>
-                  <span>Fill in the fields below and click <strong>Publish All</strong>.</span>
-                </div>
-              </div>
-            )}
-
             <div className={styles.sectionBody}>
-
-              <div>
-                <label className={styles.label}>API Key</label>
-                <div className={styles.passWrap}>
-                  <input
-                    type={showKey ? 'text' : 'password'}
-                    className={styles.input}
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="rblx_••••••••••••••••••••"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <button className={styles.eyeBtn} onClick={() => setShowKey(!showKey)} tabIndex={-1}>
-                    {showKey ? '○' : '●'}
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className={styles.label}>Creator Type</label>
-                <div className={styles.toggleGroup}>
-                  {(['user', 'group'] as CreatorType[]).map((t) => (
-                    <button
-                      key={t}
-                      className={`${styles.toggleBtn}${creatorType === t ? ` ${styles.active}` : ''}`}
-                      onClick={() => setCreatorType(t)}
-                    >
-                      {t === 'user' ? 'User' : 'Group'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className={styles.label}>
-                  {creatorType === 'user' ? 'User ID' : 'Group ID'}
-                </label>
-                <input
-                  type="text"
-                  className={styles.input}
-                  value={creatorId}
-                  onChange={(e) => setCreatorId(e.target.value)}
-                  placeholder={creatorType === 'user' ? '12345678' : '87654321'}
-                />
-              </div>
-
-              <button
-                className={`${styles.btn} ${styles.btnPrimary} ${styles.btnFull}`}
-                onClick={publishAll}
-                disabled={!hasItems || publishing || !apiKey.trim() || !creatorId.trim()}
-              >
-                {publishing
-                  ? '◌ Publishing…'
-                  : `▶ Publish All (${items.length} image${items.length !== 1 ? 's' : ''})`}
-              </button>
-
-              {/* Per-item publish results */}
-              {items.some((i) => i.pubStatus !== 'idle') && (
-                <div className={styles.pubResultsList}>
-                  {items.map((item) => (
-                    <div key={item.id} className={styles.pubResultRow}>
-                      <span className={styles.pubResultName}>{item.fileName}</span>
-                      <span className={`${styles.pubStatusPill} ${pubStatusClass(item.pubStatus)}`}>
-                        {item.pubStatus}
-                      </span>
-                      {item.pubAssetId && (
-                        <span className={styles.pubAssetId}>{item.pubAssetId}</span>
-                      )}
-                      {item.pubAssetId && (
-                        <button
-                          className={styles.pubCopyBtn}
-                          onClick={() => copyAssetId(item.id)}
-                          title="Copy asset ID"
-                        >
-                          Copy
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {hasSomeAssetId && (
-                <button className={styles.copyAllBtn} onClick={copyAllIds}>
-                  ↳ Copy All IDs
+              <div className={styles.publishRow}>
+                <button
+                  className={`${styles.btn} ${styles.btnPrimary} ${styles.btnFull}`}
+                  onClick={publishAll}
+                  disabled={!hasItems || publishing || !apiKey.trim() || !creatorId.trim()}
+                >
+                  {publishing
+                    ? '◌ Publishing…'
+                    : `▶ Publish All (${items.length} image${items.length !== 1 ? 's' : ''})`}
                 </button>
-              )}
-
+                <button
+                  className={styles.configGearBtn}
+                  onClick={() => setPublishDialogOpen(true)}
+                  disabled={!hasItems}
+                  title="Open publish config"
+                  aria-label="Open publish config"
+                >
+                  ⚙
+                </button>
+              </div>
+              <p className={styles.hint}>
+                {finishedCount > 0
+                  ? `${finishedCount} / ${items.length} published`
+                  : 'Configure once in modal, publish from sidebar.'}
+              </p>
             </div>
           </div>
 
@@ -884,7 +1901,7 @@ export default function ImageTool() {
               )}
 
               <p className={styles.hint}>
-                {tw}×{th}px · {selectedItem?.processedBlob ? 'PNG' : format.toUpperCase()} · {quality}% quality
+                {tw}×{th}px · {format.toUpperCase()} · {quality}% quality
               </p>
 
             </div>
@@ -905,6 +1922,166 @@ export default function ImageTool() {
           }`}
         >
           {toast.msg}
+        </div>
+      )}
+
+      {publishDialogMounted && (
+        <div
+          className={`${styles.dialogBackdrop}${publishDialogVisible ? ` ${styles.open}` : ''}`}
+          onClick={closePublishDialog}
+        >
+          <div className={styles.dialogPanel} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.dialogHead}>
+              <span className={styles.dialogTitle}>Publish to Roblox</span>
+              <button
+                className={styles.dialogClose}
+                onClick={closePublishDialog}
+                title="Close publish dialog"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className={styles.dialogBody}>
+              {/* Help toggle */}
+              <button
+                className={styles.helpToggle}
+                onClick={() => setShowHelp(!showHelp)}
+              >
+                <span>How does this work?</span>
+                <span className={`${styles.helpToggleChevron}${showHelp ? ` ${styles.open}` : ''}`}>▾</span>
+              </button>
+
+              {showHelp && (
+                <div className={styles.helpCard}>
+                  <div className={styles.helpStepRow}>
+                    <span className={styles.helpStepNum}>1.</span>
+                    <span>
+                      Create an API key at{' '}
+                      <button
+                        className={styles.helpLinkBtn}
+                        onClick={() => window.open('https://create.roblox.com/dashboard/credentials', '_blank')}
+                      >
+                        Creator Hub
+                      </button>
+                      . Enable <strong>Assets: Write</strong> permission.
+                    </span>
+                  </div>
+                  <div className={styles.helpStepRow}>
+                    <span className={styles.helpStepNum}>2.</span>
+                    <span>
+                      Find your User ID in your Roblox profile URL:{' '}
+                      <em>roblox.com/users/[YOUR_ID]/profile</em>. Or use a Group ID for group assets.
+                    </span>
+                  </div>
+                  <div className={styles.helpStepRow}>
+                    <span className={styles.helpStepNum}>3.</span>
+                    <span>Fill in the fields below and click <strong>Publish All</strong>.</span>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className={styles.label}>API Key</label>
+                <div className={styles.passWrap}>
+                  <input
+                    type={showKey ? 'text' : 'password'}
+                    className={styles.input}
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="rblx_••••••••••••••••••••"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <button className={styles.eyeBtn} onClick={() => setShowKey(!showKey)} tabIndex={-1}>
+                    {showKey ? '○' : '●'}
+                  </button>
+                </div>
+                <p className={styles.subtleHint}>Saved locally in your browser on this device.</p>
+              </div>
+
+              <div className={styles.presetBox}>
+                <label className={styles.label}>Presets</label>
+                <select
+                  className={styles.input}
+                  value={selectedPresetId}
+                  onChange={(e) => applyPreset(e.target.value)}
+                >
+                  <option value="">Select preset...</option>
+                  {presets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  className={styles.input}
+                  value={presetName}
+                  onChange={(e) => setPresetName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') saveNewPreset();
+                  }}
+                  placeholder="Preset name"
+                />
+                <div className={styles.presetActions}>
+                  <button
+                    className={styles.smallBtn}
+                    onClick={saveNewPreset}
+                    disabled={!presetName.trim() || !apiKey.trim() || !creatorId.trim()}
+                    title="Save as a new preset"
+                  >
+                    Save New
+                  </button>
+                  <button
+                    className={styles.smallBtn}
+                    onClick={updatePreset}
+                    disabled={!selectedPresetId || !presetName.trim() || !apiKey.trim() || !creatorId.trim()}
+                    title="Update selected preset with current fields"
+                  >
+                    Update
+                  </button>
+                  <button
+                    className={styles.smallBtn}
+                    onClick={deletePreset}
+                    disabled={!selectedPresetId}
+                    title="Delete selected preset"
+                  >
+                    Delete
+                  </button>
+                </div>
+                <p className={styles.subtleHint}>Pick one to load instantly, then Save New or Update as needed.</p>
+              </div>
+
+              <div>
+                <label className={styles.label}>Creator Type</label>
+                <div className={styles.toggleGroup}>
+                  {(['user', 'group'] as CreatorType[]).map((t) => (
+                    <button
+                      key={t}
+                      className={`${styles.toggleBtn}${creatorType === t ? ` ${styles.active}` : ''}`}
+                      onClick={() => setCreatorType(t)}
+                    >
+                      {t === 'user' ? 'User' : 'Group'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className={styles.label}>
+                  {creatorType === 'user' ? 'User ID' : 'Group ID'}
+                </label>
+                <input
+                  type="text"
+                  className={styles.input}
+                  value={creatorId}
+                  onChange={(e) => setCreatorId(e.target.value)}
+                  placeholder={creatorType === 'user' ? '12345678' : '87654321'}
+                />
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

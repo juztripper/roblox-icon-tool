@@ -1,4 +1,4 @@
-// File: /Users/ripper/Documents/Coding/roblox-icon-tool/app/api/remove-background/route.ts
+// File: C:\Users\juztr\OneDrive\Documents\Projects\roblox-icon-tool\app\api\remove-background\route.ts
 import * as entry from '../../../../../app/api/remove-background/route.js'
 import type { NextRequest } from 'next/server.js'
 

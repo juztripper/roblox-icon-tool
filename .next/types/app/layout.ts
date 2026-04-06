@@ -1,4 +1,4 @@
-// File: /Users/ripper/Documents/Coding/roblox-icon-tool/app/layout.tsx
+// File: C:\Users\juztr\OneDrive\Documents\Projects\roblox-icon-tool\app\layout.tsx
 import * as entry from '../../../app/layout.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

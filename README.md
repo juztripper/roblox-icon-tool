@@ -49,6 +49,9 @@ A modern web application for batch processing game icons and images for Roblox. 
    # Roblox Open Cloud API credentials
    NEXT_PUBLIC_ROBLOX_UNIVERSE_ID=your_universe_id
    ROBLOX_API_KEY=your_api_key
+   OPENROUTER_API_KEY=your_openrouter_api_key
+   # Optional override (defaults to google/gemma-4-26b-a4b-it)
+   OPENROUTER_IMAGE_MODEL=google/gemma-4-26b-a4b-it
    ```
 
 4. Start the development server:
@@ -94,6 +97,7 @@ roblox-icon-tool/
 ├── app/
 │   ├── api/
 │   │   ├── remove-background/route.ts    # Background removal API
+│   │   ├── auto-name/route.ts            # AI filename generation API
 │   │   └── roblox-upload/route.ts        # Roblox publishing API
 │   ├── globals.css                       # Global styles & CSS variables
 │   ├── layout.tsx                        # Root layout

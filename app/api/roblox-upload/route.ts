@@ -29,7 +29,15 @@ export async function POST(request: NextRequest) {
     const creatorType = formData.get('creatorType') as string;
     const creatorId = formData.get('creatorId') as string;
     const assetName = (formData.get('assetName') as string) || 'Uploaded Icon';
-    const imageFile = formData.get('image') as Blob | null;
+    const imageEntry = formData.get('image');
+    const imageFile = imageEntry instanceof Blob ? imageEntry : null;
+    const imageName =
+      imageEntry &&
+      typeof imageEntry === 'object' &&
+      'name' in imageEntry &&
+      typeof (imageEntry as { name?: unknown }).name === 'string'
+        ? ((imageEntry as { name: string }).name || 'icon.png')
+        : 'icon.png';
 
     if (!apiKey || !creatorId || !imageFile) {
       return NextResponse.json({ error: 'Missing required fields: apiKey, creatorId, image' }, { status: 400 });
@@ -47,7 +55,7 @@ export async function POST(request: NextRequest) {
 
     const robloxForm = new FormData();
     robloxForm.append('request', JSON.stringify(requestPayload));
-    robloxForm.append('fileContent', imageFile, 'icon.png');
+    robloxForm.append('fileContent', imageFile, imageName);
 
     const uploadRes = await fetch('https://apis.roblox.com/assets/v1/assets', {
       method: 'POST',
