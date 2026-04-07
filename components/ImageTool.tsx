@@ -19,6 +19,18 @@ const RBLX_PRESETS_STORAGE_KEY = 'pixel_forge_publish_presets_v1';
 const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
 const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
 const BG_MODEL_ESTIMATED_SIZE = '~200MB';
+const BG_BROWSER_MODULE_URL = 'https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.6.0/+esm';
+
+let bgModulePromise: Promise<{ removeBackground: (input: Blob, config?: unknown) => Promise<Blob> }> | null = null;
+
+function loadBrowserBgModule() {
+  if (!bgModulePromise) {
+    bgModulePromise = import(/* webpackIgnore: true */ BG_BROWSER_MODULE_URL) as Promise<{
+      removeBackground: (input: Blob, config?: unknown) => Promise<Blob>;
+    }>;
+  }
+  return bgModulePromise;
+}
 
 interface CachedImage {
   id: string;
@@ -902,19 +914,26 @@ export default function ImageTool() {
     }, 400);
 
     try {
-      const fd = new FormData();
-      fd.append('image', activeBlob(item), 'source.png');
-
-      const res = await fetch('/api/remove-background', { method: 'POST', body: fd });
+      const { removeBackground } = await loadBrowserBgModule();
+      let res: Blob;
+      try {
+        // Prefer WebGPU + fp16 for speed on supported hardware.
+        res = await removeBackground(activeBlob(item), {
+          model: 'isnet_fp16',
+          device: 'gpu',
+          proxyToWorker: true,
+        });
+      } catch {
+        // Fallback for browsers/devices without reliable WebGPU support.
+        res = await removeBackground(activeBlob(item), {
+          model: 'isnet',
+          device: 'cpu',
+          proxyToWorker: true,
+        });
+      }
       clearInterval(ticker);
       setBgPct(100);
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
-      }
-
-      const result = await res.blob();
+      const result = res;
 
       // Fix alpha bleeding: replace edge pixel colors with nearest opaque neighbor color
       // so scaling doesn't produce a dark halo around the subject.
@@ -1371,7 +1390,7 @@ export default function ImageTool() {
     const action = bgNoticeAction;
     setBgNoticeDialogOpen(false);
     setBgNoticeAction(null);
-    showToast(`Downloading local model (${BG_MODEL_ESTIMATED_SIZE}) on first run...`, 'info');
+    showToast(`Downloading browser model (${BG_MODEL_ESTIMATED_SIZE}) on first run...`, 'info');
     if (action) runBgAction(action);
   }, [bgNoticeAction, runBgAction, showToast]);
 
@@ -2072,7 +2091,7 @@ export default function ImageTool() {
                 </button>
               </div>
               <p className={styles.subtleHint}>
-                First run downloads a local AI model ({BG_MODEL_ESTIMATED_SIZE}) one time.
+                First run downloads a browser AI model ({BG_MODEL_ESTIMATED_SIZE}) one time.
               </p>
 
               {!touchUpOpen ? (
@@ -2280,7 +2299,7 @@ export default function ImageTool() {
             </div>
             <div className={styles.dialogBody}>
               <p className={styles.subtleHint}>
-                Pixel Forge will download the local AI model ({BG_MODEL_ESTIMATED_SIZE}) one time.
+                Pixel Forge will download the browser AI model ({BG_MODEL_ESTIMATED_SIZE}) one time.
                 Keep this tab open during the initial download.
               </p>
               <p className={styles.subtleHint}>
