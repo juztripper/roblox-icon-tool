@@ -3,7 +3,7 @@
 // which avoids Next.js trying to bundle .wasm files it can't resolve.
 import type * as Transformers from '@huggingface/transformers';
 
-const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/+esm';
+const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4/+esm';
 
 // RMBG-2.0 is gated (requires HF auth). RMBG-1.4 is Apache 2.0, open access,
 // and uses the same API — still a significant upgrade over IS-Net.
@@ -19,6 +19,10 @@ function getTransformers(): Promise<typeof Transformers> {
       // @ts-ignore — dynamic CDN URL, types provided by the import type above
       TRANSFORMERS_CDN
     ) as unknown as Promise<typeof Transformers>;
+    // If initial load fails, allow the next call to retry.
+    transformersPromise.catch(() => {
+      transformersPromise = null;
+    });
   }
   return transformersPromise;
 }
@@ -53,6 +57,10 @@ function loadResources(): Promise<LoadedResources> {
       const processor = await processorPromise;
       return { model, processor };
     })();
+    // If model/processor setup fails, clear cache so future calls can retry.
+    resourcesPromise.catch(() => {
+      resourcesPromise = null;
+    });
   }
   return resourcesPromise;
 }
