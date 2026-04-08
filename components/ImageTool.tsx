@@ -92,6 +92,7 @@ function canvasExport(
   h: number,
   fmt: Format,
   quality: number,
+  brightness: number = 100,
 ): Promise<Blob> {
   return new Promise((res, rej) => {
     const img = new Image();
@@ -125,7 +126,9 @@ function canvasExport(
       } else {
         ctx.clearRect(0, 0, w, h);
       }
+      if (brightness !== 100) ctx.filter = `brightness(${brightness / 100})`;
       ctx.drawImage(img, dx, dy, dw, dh);
+      ctx.filter = 'none';
       const mime = fmt === 'jpeg' ? 'image/jpeg' : `image/${fmt}`;
       canvas.toBlob(
         (b) => { b ? res(b) : rej(new Error('canvas.toBlob returned null')); },
@@ -417,6 +420,7 @@ export default function ImageTool() {
   const [locked, setLocked] = useState(true);
   const [quality, setQuality] = useState(90);
   const [format, setFormat] = useState<Format>('png');
+  const [brightness, setBrightness] = useState(100);
 
   // BG removal
   const [bgBusy, setBgBusy] = useState(false);
@@ -1370,8 +1374,8 @@ export default function ImageTool() {
   // ── Export ────────────────────────────────────────────────────────────────────
 
   const getExportBlob = useCallback(async (item: ImageItem): Promise<Blob> => {
-    return canvasExport(activeBlob(item), tw, th, format, quality);
-  }, [format, tw, th, quality]);
+    return canvasExport(activeBlob(item), tw, th, format, quality, brightness);
+  }, [format, tw, th, quality, brightness]);
 
   // ── Download ──────────────────────────────────────────────────────────────────
 
@@ -1913,6 +1917,7 @@ export default function ImageTool() {
                     style={{
                       transform: `translate(${viewBase.offsetX + viewPanX}px, ${viewBase.offsetY + viewPanY}px) scale(${viewBase.finalScale})`,
                       transformOrigin: 'top left',
+                      filter: brightness !== 100 ? `brightness(${brightness / 100})` : undefined,
                     }}
                     onPointerDown={(e) => {
                       if (!spaceDown && e.button !== 1 && e.button !== 2) return;
@@ -2026,6 +2031,30 @@ export default function ImageTool() {
                 </div>
               </div>
 
+            </div>
+          </div>
+
+          {/* 01.5 — Adjustments */}
+          <div className={styles.section}>
+            <div className={styles.sectionHead}>
+              <span className={styles.sectionNum}>01.5</span>
+              <span className={styles.sectionTitle}>Adjustments</span>
+            </div>
+            <div className={styles.sectionBody}>
+              <div className={styles.sliderGroup}>
+                <div className={styles.sliderLabelRow}>
+                  <label className={styles.label} style={{ marginBottom: 0 }}>Brightness</label>
+                  <span className={styles.sliderVal}>{brightness}%</span>
+                </div>
+                <input
+                  type="range"
+                  className={styles.slider}
+                  min={0}
+                  max={200}
+                  value={brightness}
+                  onChange={(e) => setBrightness(Number(e.target.value))}
+                />
+              </div>
             </div>
           </div>
 
