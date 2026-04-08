@@ -18,19 +18,7 @@ const RBLX_SETTINGS_STORAGE_KEY = 'pixel_forge_publish_settings_v1';
 const RBLX_PRESETS_STORAGE_KEY = 'pixel_forge_publish_presets_v1';
 const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
 const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
-const BG_MODEL_ESTIMATED_SIZE = '~200MB';
-const BG_BROWSER_MODULE_URL = 'https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.6.0/+esm';
-
-let bgModulePromise: Promise<{ removeBackground: (input: Blob, config?: unknown) => Promise<Blob> }> | null = null;
-
-function loadBrowserBgModule() {
-  if (!bgModulePromise) {
-    bgModulePromise = import(/* webpackIgnore: true */ BG_BROWSER_MODULE_URL) as Promise<{
-      removeBackground: (input: Blob, config?: unknown) => Promise<Blob>;
-    }>;
-  }
-  return bgModulePromise;
-}
+const BG_MODEL_ESTIMATED_SIZE = '~170MB';
 
 interface CachedImage {
   id: string;
@@ -914,23 +902,8 @@ export default function ImageTool() {
     }, 400);
 
     try {
-      const { removeBackground } = await loadBrowserBgModule();
-      let res: Blob;
-      try {
-        // Prefer WebGPU + fp16 for speed on supported hardware.
-        res = await removeBackground(activeBlob(item), {
-          model: 'isnet_fp16',
-          device: 'gpu',
-          proxyToWorker: true,
-        });
-      } catch {
-        // Fallback for browsers/devices without reliable WebGPU support.
-        res = await removeBackground(activeBlob(item), {
-          model: 'isnet',
-          device: 'cpu',
-          proxyToWorker: true,
-        });
-      }
+      const { removeBackground } = await import('../lib/bgRemoval');
+      const res = await removeBackground(activeBlob(item));
       clearInterval(ticker);
       setBgPct(100);
       const result = res;
