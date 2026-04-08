@@ -108,6 +108,7 @@ export async function removeBackground(inputBlob: Blob): Promise<Blob> {
   for (let i = 0; i < maskData.length; i++) {
     imageData.data[4 * i + 3] = maskData[i];
   }
+  bleedAlpha(imageData);
   ctx.putImageData(imageData, 0, 0);
 
   return new Promise<Blob>((resolve, reject) => {
@@ -116,4 +117,104 @@ export async function removeBackground(inputBlob: Blob): Promise<Blob> {
       'image/png',
     );
   });
+}
+
+/**
+ * Alpha bleeding — fills transparent pixels bordering opaque ones with the
+ * averaged colour of their opaque neighbours (alpha stays 0).
+ * Prevents dark/bright fringing when Roblox (or any renderer) samples the
+ * texture at mip-map boundaries.
+ *
+ * Algorithm: https://github.com/urraka/alpha-bleeding
+ */
+function bleedAlpha(imageData: ImageData): void {
+  const { data, width, height } = imageData;
+
+  // opaque[y][x]: -1 = fully opaque source pixel, 0xFE/0x7F/… = bled pixel,
+  // 0 = not yet processed transparent pixel.
+  const opaque = new Int32Array(width * height); // flat row-major
+  const loose  = new Uint8Array(width * height); // boolean flat array
+
+  const offsets = [-1, -1, 0, -1, 1, -1, -1, 0, 1, 0, -1, 1, 0, 1, 1, 1];
+
+  let pending: { x: number; y: number }[] = [];
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const a = data[(y * width + x) * 4 + 3];
+      if (a === 0) {
+        let isLoose = true;
+        for (let k = 0; k < 16; k += 2) {
+          const nx = x + offsets[k];
+          const ny = y + offsets[k + 1];
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            if (data[(ny * width + nx) * 4 + 3] !== 0) {
+              isLoose = false;
+              break;
+            }
+          }
+        }
+        if (!isLoose) {
+          pending.push({ x, y });
+        } else {
+          loose[y * width + x] = 1;
+        }
+      } else {
+        opaque[y * width + x] = -1;
+      }
+    }
+  }
+
+  while (pending.length > 0) {
+    const pendingNext: { x: number; y: number }[] = [];
+
+    for (const { x, y } of pending) {
+      let r = 0, g = 0, b = 0, count = 0;
+
+      for (let k = 0; k < 16; k += 2) {
+        const nx = x + offsets[k];
+        const ny = y + offsets[k + 1];
+        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+          if (opaque[ny * width + nx] & 1) {
+            const idx = (ny * width + nx) * 4;
+            r += data[idx];
+            g += data[idx + 1];
+            b += data[idx + 2];
+            count++;
+          }
+        }
+      }
+
+      if (count > 0) {
+        const idx = (y * width + x) * 4;
+        data[idx]     = r / count;
+        data[idx + 1] = g / count;
+        data[idx + 2] = b / count;
+        // alpha stays 0 — this is colour-only bleeding
+
+        opaque[y * width + x] = 0xfe;
+
+        for (let k = 0; k < 16; k += 2) {
+          const nx = x + offsets[k];
+          const ny = y + offsets[k + 1];
+          if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+            if (loose[ny * width + nx]) {
+              pendingNext.push({ x: nx, y: ny });
+              loose[ny * width + nx] = 0;
+            }
+          }
+        }
+      } else {
+        pendingNext.push({ x, y });
+      }
+    }
+
+    if (pendingNext.length > 0) {
+      for (const { x, y } of pending) {
+        opaque[y * width + x] >>= 1;
+      }
+    }
+
+    pending = pendingNext;
+  }
 }
