@@ -19,6 +19,73 @@ const RBLX_PRESETS_STORAGE_KEY = 'pixel_forge_publish_presets_v1';
 const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
 const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
 const BG_MODEL_ESTIMATED_SIZE = '~170MB';
+const APP_VERSION = '3.0';
+const LAST_SEEN_VERSION_KEY = 'pixel_forge_last_seen_version';
+
+interface ChangelogEntry {
+  version: string;
+  date: string;
+  title: string;
+  features?: string[];
+  fixes?: string[];
+  improvements?: string[];
+}
+
+const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '3.0',
+    date: 'Apr 12, 2026',
+    title: 'Roblox Import & WYSIWYG Preview',
+    features: [
+      'Import images from Roblox by asset ID or rbxassetid:// URL',
+      'Re-edit published images from the library back into the editor',
+      'Download full-resolution images from the library',
+      'WYSIWYG export preview — preview now shows actual export quality and dimensions',
+    ],
+    improvements: [
+      'Library images cached locally via IndexedDB for instant access',
+      'Higher quality library thumbnails (200px, up from 80px)',
+      'Small exports render with crisp pixelated scaling in previews',
+    ],
+  },
+  {
+    version: '2.0',
+    date: 'Apr 8, 2026',
+    title: 'Touch-Up, AI Naming & Library',
+    features: [
+      'Touch-up brush editor with erase/restore tools',
+      'Smart refine brush with flood-fill color matching',
+      'AI-powered auto-naming via vision model',
+      'Image library — published assets saved with thumbnails and IDs',
+      'Publish presets for quick API key / creator switching',
+      'Single-image publish (alongside batch)',
+      'Brightness adjustment slider',
+    ],
+    improvements: [
+      'Switched to RMBG-1.4 (client-side, no server needed)',
+      'Alpha bleeding to fix dark edge fringing on Roblox textures',
+      'Undo/redo support in touch-up editor (Ctrl+Z / Ctrl+Shift+Z)',
+      'Zoom and pan in preview and touch-up canvases',
+    ],
+    fixes: [
+      'Fixed transformers runtime/version mismatch',
+      'Fixed retry behavior for model loading',
+    ],
+  },
+  {
+    version: '1.0',
+    date: 'Apr 6, 2026',
+    title: 'Initial Release',
+    features: [
+      'Multi-image queue with drag-and-drop and paste support',
+      'Background removal powered by browser AI',
+      'Batch publish to Roblox via Open Cloud API',
+      'Export with custom dimensions, format (PNG/JPEG/WebP), and quality',
+      'Batch download all processed images',
+      'Copy asset IDs to clipboard',
+    ],
+  },
+];
 
 interface CachedImage {
   id: string;
@@ -392,6 +459,8 @@ function blobToThumbnailDataUrl(blob: Blob, size = 80): Promise<string> {
       canvas.height = size;
       const ctx = canvas.getContext('2d');
       if (!ctx) { reject(new Error('No canvas context')); return; }
+      // Disable smoothing so small images upscale with crisp pixels
+      ctx.imageSmoothingEnabled = false;
       const scale = Math.min(size / img.naturalWidth, size / img.naturalHeight);
       const dw = img.naturalWidth * scale;
       const dh = img.naturalHeight * scale;
@@ -404,6 +473,54 @@ function blobToThumbnailDataUrl(blob: Blob, size = 80): Promise<string> {
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image load failed')); };
     img.src = url;
   });
+}
+
+// ── IndexedDB blob cache (for library images) ───────────────────────────────
+
+const IDB_NAME = 'pixel_forge_blobs';
+const IDB_STORE = 'library_images';
+
+function openBlobDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveBlobToIdb(assetId: string, blob: Blob): Promise<void> {
+  try {
+    const db = await openBlobDb();
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(blob, assetId);
+    await new Promise<void>((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+    db.close();
+  } catch { /* best-effort */ }
+}
+
+async function loadBlobFromIdb(assetId: string): Promise<Blob | null> {
+  try {
+    const db = await openBlobDb();
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(assetId);
+    const result = await new Promise<Blob | null>((res, rej) => {
+      req.onsuccess = () => res(req.result instanceof Blob ? req.result : null);
+      req.onerror = () => rej(req.error);
+    });
+    db.close();
+    return result;
+  } catch { return null; }
+}
+
+async function deleteBlobFromIdb(assetId: string): Promise<void> {
+  try {
+    const db = await openBlobDb();
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(assetId);
+    await new Promise<void>((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+    db.close();
+  } catch { /* best-effort */ }
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -443,6 +560,9 @@ export default function ImageTool() {
   const [viewSize, setViewSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [previewDims, setPreviewDims] = useState<{ w: number; h: number } | null>(null);
 
+  // Export-resolution preview
+  const [exportPreviewUrl, setExportPreviewUrl] = useState<string | null>(null);
+
   // Single-item BG progress (fake ticker)
   const [bgPct, setBgPct] = useState(0);
 
@@ -464,6 +584,13 @@ export default function ImageTool() {
   const [storageHydrated, setStorageHydrated] = useState(false);
   const [imageLibrary, setImageLibrary] = useState<CachedImage[]>([]);
   const [activeTab, setActiveTab] = useState<ActiveTab>('tool');
+
+  // Import from Roblox
+  const [importAssetInput, setImportAssetInput] = useState('');
+  const [importBusy, setImportBusy] = useState(false);
+
+  // Changelog
+  const [changelogOpen, setChangelogOpen] = useState(false);
 
   // Toast
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -570,18 +697,18 @@ export default function ImageTool() {
       setPreviewDims(null);
       return;
     }
-    const currentBlob = item.processedBlob ?? item.originalBlob;
-    imgDims(currentBlob)
-      .then((d) => {
-        if (!cancelled) setPreviewDims(d);
-      })
-      .catch(() => {
-        if (!cancelled) setPreviewDims(item.dims ?? null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [items, selectedId]);
+    if (touchUpOpen) {
+      // Touch-up mode uses the source image dimensions
+      const currentBlob = item.processedBlob ?? item.originalBlob;
+      imgDims(currentBlob)
+        .then((d) => { if (!cancelled) setPreviewDims(d); })
+        .catch(() => { if (!cancelled) setPreviewDims(item.dims ?? null); });
+    } else {
+      // Normal mode: use export dimensions so preview fits the export-resolution image
+      setPreviewDims({ w: tw, h: th });
+    }
+    return () => { cancelled = true; };
+  }, [items, selectedId, tw, th, touchUpOpen]);
 
   useEffect(() => {
     if (!touchUpOpen || spaceDown) {
@@ -666,6 +793,14 @@ export default function ImageTool() {
       // Ignore invalid local storage payloads.
     }
 
+    // Show changelog if version changed since last visit
+    try {
+      const lastSeen = window.localStorage.getItem(LAST_SEEN_VERSION_KEY);
+      if (lastSeen !== APP_VERSION) {
+        setChangelogOpen(true);
+      }
+    } catch { /* ignore */ }
+
     setStorageHydrated(true);
   }, []);
 
@@ -725,6 +860,28 @@ export default function ImageTool() {
   function activeBlob(item: ImageItem): Blob {
     return item.processedBlob ?? item.originalBlob;
   }
+
+  // ── Export-resolution preview ─────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!selectedItem || touchUpOpen) {
+      setExportPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
+      return;
+    }
+    let cancelled = false;
+    const src = activeBlob(selectedItem);
+    canvasExport(src, tw, th, 'png', 100, brightness).then((blob) => {
+      if (cancelled) return;
+      setExportPreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return URL.createObjectURL(blob);
+      });
+    }).catch(() => {
+      if (!cancelled) setExportPreviewUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedItem?.id, selectedItem?.processedBlob, selectedItem?.previewUrl, tw, th, brightness, touchUpOpen]);
 
   // ── Toast ─────────────────────────────────────────────────────────────────────
 
@@ -1421,9 +1578,10 @@ export default function ImageTool() {
 
   // ── Image Library ─────────────────────────────────────────────────────────────
 
-  const addToLibrary = useCallback(async (item: ImageItem, assetId: string) => {
+  const addToLibrary = useCallback(async (item: ImageItem, assetId: string, exportBlob: Blob) => {
     try {
-      const previewDataUrl = await blobToThumbnailDataUrl(activeBlob(item));
+      // Use the export blob for the thumbnail so it reflects the actual published quality
+      const previewDataUrl = await blobToThumbnailDataUrl(exportBlob, 200);
       const entry: CachedImage = {
         id: uid(),
         previewDataUrl,
@@ -1435,19 +1593,149 @@ export default function ImageTool() {
         if (prev.some((e) => e.assetId === assetId)) return prev;
         return [entry, ...prev];
       });
+      // Store full export blob in IndexedDB for instant re-edit / download
+      void saveBlobToIdb(assetId, exportBlob);
     } catch {
       // Best-effort — never block publish on a thumbnail failure.
     }
   }, []);
 
   const deleteFromLibrary = useCallback((id: string) => {
-    setImageLibrary((prev) => prev.filter((e) => e.id !== id));
+    setImageLibrary((prev) => {
+      const entry = prev.find((e) => e.id === id);
+      if (entry) void deleteBlobFromIdb(entry.assetId);
+      return prev.filter((e) => e.id !== id);
+    });
   }, []);
 
   const copyLibraryId = useCallback((assetId: string) => {
     navigator.clipboard.writeText(assetId);
     showToast('Copied!', 'ok');
   }, [showToast]);
+
+  // ── Import from Roblox ─────────────────────────────────────────────────────────
+
+  /** Parse an asset ID from various input formats: raw number, rbxassetid://123, full URL, etc. */
+  const parseAssetId = useCallback((raw: string): string | null => {
+    const trimmed = raw.trim();
+    // rbxassetid://123456
+    const rbxMatch = trimmed.match(/rbxassetid:\/\/(\d+)/i);
+    if (rbxMatch) return rbxMatch[1];
+    // Plain number
+    if (/^\d+$/.test(trimmed)) return trimmed;
+    // URL with id= param
+    const urlMatch = trimmed.match(/[?&]id=(\d+)/i);
+    if (urlMatch) return urlMatch[1];
+    return null;
+  }, []);
+
+  const fetchRobloxImage = useCallback(async (assetId: string): Promise<Blob> => {
+    const res = await fetch(`/api/roblox-fetch-image?assetId=${encodeURIComponent(assetId)}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      throw new Error(data.error ?? `Failed to fetch asset ${assetId}`);
+    }
+    return res.blob();
+  }, []);
+
+  const importFromAssetId = useCallback(async (raw: string) => {
+    const assetId = parseAssetId(raw);
+    if (!assetId) {
+      showToast('Enter a valid asset ID or rbxassetid:// URL', 'err');
+      return;
+    }
+
+    setImportBusy(true);
+    try {
+      const blob = await fetchRobloxImage(assetId);
+      const file = new File([blob], `roblox_${assetId}.png`, { type: blob.type || 'image/png' });
+      const id = uid();
+      const previewUrl = URL.createObjectURL(file);
+      let dims: { w: number; h: number } | null = null;
+      try { dims = await imgDims(file); } catch { /* ignore */ }
+
+      const newItem: ImageItem = {
+        id,
+        originalBlob: file,
+        processedBlob: null,
+        previewUrl,
+        fileName: `roblox_${assetId}.png`,
+        originalFileName: `roblox_${assetId}.png`,
+        nameStatus: 'loading' as NameStatus,
+        dims,
+        bgStatus: 'idle' as BgStatus,
+        pubStatus: 'idle' as PubStatus,
+      };
+
+      setItems((prev) => [...prev, newItem]);
+      setSelectedId(newItem.id);
+      setActiveTab('tool');
+      setImportAssetInput('');
+      showToast(`Imported asset ${assetId}`, 'ok');
+
+      void autoNameOne(newItem.id, newItem.originalBlob, newItem.fileName);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Import failed', 'err');
+    } finally {
+      setImportBusy(false);
+    }
+  }, [parseAssetId, fetchRobloxImage, showToast, autoNameOne]);
+
+  /** Resolve a library entry's image: try local IndexedDB cache first, then Roblox. */
+  const resolveLibraryBlob = useCallback(async (entry: CachedImage): Promise<Blob> => {
+    const cached = await loadBlobFromIdb(entry.assetId);
+    if (cached) return cached;
+    return fetchRobloxImage(entry.assetId);
+  }, [fetchRobloxImage]);
+
+  const importLibraryEntry = useCallback(async (entry: CachedImage) => {
+    setImportBusy(true);
+    try {
+      const blob = await resolveLibraryBlob(entry);
+      const file = new File([blob], `${entry.name}.png`, { type: blob.type || 'image/png' });
+      const id = uid();
+      const previewUrl = URL.createObjectURL(file);
+      let dims: { w: number; h: number } | null = null;
+      try { dims = await imgDims(file); } catch { /* ignore */ }
+
+      const newItem: ImageItem = {
+        id,
+        originalBlob: file,
+        processedBlob: null,
+        previewUrl,
+        fileName: `${entry.name}.png`,
+        originalFileName: `${entry.name}.png`,
+        nameStatus: 'done' as NameStatus,
+        dims,
+        bgStatus: 'idle' as BgStatus,
+        pubStatus: 'idle' as PubStatus,
+      };
+
+      setItems((prev) => [...prev, newItem]);
+      setSelectedId(newItem.id);
+      setActiveTab('tool');
+      showToast(`Imported "${entry.name}" to editor`, 'ok');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Import failed', 'err');
+    } finally {
+      setImportBusy(false);
+    }
+  }, [resolveLibraryBlob, showToast]);
+
+  const downloadLibraryEntry = useCallback(async (entry: CachedImage) => {
+    try {
+      const blob = await resolveLibraryBlob(entry);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${entry.name}_${entry.assetId}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('Download started', 'ok');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Download failed', 'err');
+    }
+  }, [resolveLibraryBlob, showToast]);
 
   // ── Publish ───────────────────────────────────────────────────────────────────
 
@@ -1476,7 +1764,7 @@ export default function ImageTool() {
       if (data.success && data.assetId) {
         const assetId = String(data.assetId);
         updateItem(id, { pubStatus: 'done', pubAssetId: assetId });
-        void addToLibrary(item, assetId);
+        void addToLibrary(item, assetId, blob);
         showToast('Published!', 'ok');
       } else {
         updateItem(id, { pubStatus: 'error', pubError: data.error ?? 'Unknown error' });
@@ -1529,7 +1817,7 @@ export default function ImageTool() {
               i.id === item.id ? { ...i, pubStatus: 'done' as PubStatus, pubAssetId: id } : i,
             ),
           );
-          void addToLibrary(item, id);
+          void addToLibrary(item, id, blob);
         } else {
           errorCount += 1;
           setItems((prev) =>
@@ -1731,19 +2019,55 @@ export default function ImageTool() {
               Clear All
             </button>
           )}
-          <span className={styles.vBadge}>v2.0</span>
+          <button
+            className={styles.vBadge}
+            onClick={() => setChangelogOpen(true)}
+            title="View changelog"
+          >
+            v{APP_VERSION}
+          </button>
         </div>
       </header>
 
       {/* ── Library Page ── */}
       {activeTab === 'library' && (
         <div className={styles.libraryPage}>
+          {/* ── Import Bar ── */}
+          <div className={styles.libraryImportBar}>
+            <label className={styles.libraryImportLabel}>Import from Roblox</label>
+            <div className={styles.libraryImportRow}>
+              <input
+                type="text"
+                className={styles.libraryImportInput}
+                placeholder="Asset ID or rbxassetid://..."
+                value={importAssetInput}
+                onChange={(e) => setImportAssetInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && importAssetInput.trim() && !importBusy) {
+                    void importFromAssetId(importAssetInput);
+                  }
+                }}
+                disabled={importBusy}
+              />
+              <button
+                className={styles.libraryImportBtn}
+                onClick={() => void importFromAssetId(importAssetInput)}
+                disabled={!importAssetInput.trim() || importBusy}
+              >
+                {importBusy ? 'Importing...' : 'Import'}
+              </button>
+            </div>
+            <span className={styles.libraryImportHint}>
+              Paste an asset ID to fetch and load it into the editor.
+            </span>
+          </div>
+
           {imageLibrary.length === 0 ? (
             <div className={styles.libraryPageEmpty}>
               <div className={styles.libraryPageEmptyIcon}>⬡</div>
-              <span className={styles.libraryPageEmptyTitle}>No images yet</span>
+              <span className={styles.libraryPageEmptyTitle}>No published images yet</span>
               <span className={styles.libraryPageEmptySub}>
-                Images published to Roblox appear here with their IDs.
+                Images published to Roblox appear here. You can also import any Roblox image above.
               </span>
             </div>
           ) : (
@@ -1752,6 +2076,23 @@ export default function ImageTool() {
                 <div key={entry.id} className={styles.libraryPageCard}>
                   <div className={styles.libraryPageThumb}>
                     <img src={entry.previewDataUrl} alt={entry.name} className={styles.libraryPageThumbImg} />
+                    <div className={styles.libraryPageOverlay}>
+                      <button
+                        className={styles.libraryPageActionBtn}
+                        onClick={() => void importLibraryEntry(entry)}
+                        disabled={importBusy}
+                        title="Import to editor"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className={styles.libraryPageActionBtn}
+                        onClick={() => void downloadLibraryEntry(entry)}
+                        title="Download original"
+                      >
+                        Save
+                      </button>
+                    </div>
                     <button
                       className={styles.libraryPageDeleteBtn}
                       onClick={() => deleteFromLibrary(entry.id)}
@@ -1911,13 +2252,13 @@ export default function ImageTool() {
                 ) : (
                   <img
                     key={selectedItem.previewUrl}
-                    src={selectedItem.previewUrl}
+                    src={exportPreviewUrl ?? selectedItem.previewUrl}
                     alt="Preview"
                     className={styles.previewNavImg}
                     style={{
                       transform: `translate(${viewBase.offsetX + viewPanX}px, ${viewBase.offsetY + viewPanY}px) scale(${viewBase.finalScale})`,
                       transformOrigin: 'top left',
-                      filter: brightness !== 100 ? `brightness(${brightness / 100})` : undefined,
+                      imageRendering: exportPreviewUrl ? 'pixelated' : undefined,
                     }}
                     onPointerDown={(e) => {
                       if (!spaceDown && e.button !== 1 && e.button !== 2) return;
@@ -2475,6 +2816,70 @@ export default function ImageTool() {
                   placeholder={creatorType === 'user' ? '12345678' : '87654321'}
                 />
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Changelog Modal ── */}
+      {changelogOpen && (
+        <div
+          className={`${styles.dialogBackdrop} ${styles.open}`}
+          onClick={() => {
+            setChangelogOpen(false);
+            try { window.localStorage.setItem(LAST_SEEN_VERSION_KEY, APP_VERSION); } catch { /* ignore */ }
+          }}
+        >
+          <div className={styles.changelogPanel} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.dialogHead}>
+              <span className={styles.dialogTitle}>What&apos;s New</span>
+              <button
+                className={styles.dialogClose}
+                onClick={() => {
+                  setChangelogOpen(false);
+                  try { window.localStorage.setItem(LAST_SEEN_VERSION_KEY, APP_VERSION); } catch { /* ignore */ }
+                }}
+                title="Close changelog"
+              >
+                ✕
+              </button>
+            </div>
+            <div className={styles.changelogBody}>
+              {CHANGELOG.map((entry, idx) => (
+                <div key={entry.version} className={styles.changelogVersion}>
+                  <div className={styles.changelogVersionHead}>
+                    <span className={`${styles.changelogTag}${idx === 0 ? ` ${styles.changelogTagLatest}` : ''}`}>
+                      v{entry.version}
+                    </span>
+                    <span className={styles.changelogDate}>{entry.date}</span>
+                  </div>
+                  <span className={styles.changelogTitle}>{entry.title}</span>
+                  {entry.features && (
+                    <div className={styles.changelogSection}>
+                      <span className={styles.changelogSectionLabel}>Features</span>
+                      <ul className={styles.changelogList}>
+                        {entry.features.map((f, i) => <li key={i}>{f}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {entry.improvements && (
+                    <div className={styles.changelogSection}>
+                      <span className={styles.changelogSectionLabel}>Improvements</span>
+                      <ul className={styles.changelogList}>
+                        {entry.improvements.map((f, i) => <li key={i}>{f}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {entry.fixes && (
+                    <div className={styles.changelogSection}>
+                      <span className={styles.changelogSectionLabel}>Fixes</span>
+                      <ul className={styles.changelogList}>
+                        {entry.fixes.map((f, i) => <li key={i}>{f}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         </div>
