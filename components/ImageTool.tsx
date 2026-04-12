@@ -12,14 +12,15 @@ type PubStatus = 'idle' | 'queued' | 'publishing' | 'done' | 'error';
 type NameStatus = 'idle' | 'loading' | 'done' | 'error';
 type ToastKind = 'ok' | 'err' | 'info';
 type TouchToolMode = 'erase' | 'restore';
-type ActiveTab = 'tool' | 'library';
+type ActiveTab = 'tool' | 'library' | 'drafts';
 type BgActionType = 'one' | 'all';
 const RBLX_SETTINGS_STORAGE_KEY = 'pixel_forge_publish_settings_v1';
 const RBLX_PRESETS_STORAGE_KEY = 'pixel_forge_publish_presets_v1';
 const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
+const DRAFTS_STORAGE_KEY = 'pixel_forge_drafts_v1';
 const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
 const BG_MODEL_ESTIMATED_SIZE = '~170MB';
-const APP_VERSION = '3.0';
+const APP_VERSION = '4.0';
 const LAST_SEEN_VERSION_KEY = 'pixel_forge_last_seen_version';
 
 interface ChangelogEntry {
@@ -32,6 +33,20 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '4.0',
+    date: 'Apr 12, 2026',
+    title: 'Drafts Gallery & Per-Image Settings',
+    features: [
+      'Drafts gallery — save work-in-progress images for later, persisted across sessions',
+      'Per-image export settings — each image has independent dimensions, format, quality, and brightness',
+    ],
+    improvements: [
+      'Save Draft button in the preview bar for quick, non-intrusive access',
+      'Drafts tab with grid view, load/delete actions, and export settings summary',
+      'Loading a draft restores both original and processed image data with saved settings',
+    ],
+  },
   {
     version: '3.0',
     date: 'Apr 12, 2026',
@@ -95,6 +110,27 @@ interface CachedImage {
   publishedAt: number;
 }
 
+interface DraftImage {
+  id: string;
+  name: string;
+  previewDataUrl: string;
+  savedAt: number;
+  exportSettings: {
+    tw: number; th: number;
+    format: Format; quality: number; brightness: number;
+  };
+  hasBgRemoved: boolean;
+}
+
+interface ExportSettings {
+  tw: number;
+  th: number;
+  format: Format;
+  quality: number;
+  brightness: number;
+  locked: boolean;
+}
+
 interface ImageItem {
   id: string;
   originalBlob: Blob;
@@ -110,6 +146,7 @@ interface ImageItem {
   pubStatus: PubStatus;
   pubAssetId?: string;
   pubError?: string;
+  exportSettings: ExportSettings;
 }
 
 interface ToastState {
@@ -124,6 +161,10 @@ interface PublishPreset {
   creatorType: CreatorType;
   creatorId: string;
 }
+
+const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
+  tw: 512, th: 512, format: 'png', quality: 90, brightness: 100, locked: true,
+};
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -479,11 +520,16 @@ function blobToThumbnailDataUrl(blob: Blob, size = 80): Promise<string> {
 
 const IDB_NAME = 'pixel_forge_blobs';
 const IDB_STORE = 'library_images';
+const IDB_DRAFT_STORE = 'draft_images';
 
 function openBlobDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_NAME, 1);
-    req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
+    const req = indexedDB.open(IDB_NAME, 2);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      if (!db.objectStoreNames.contains(IDB_DRAFT_STORE)) db.createObjectStore(IDB_DRAFT_STORE);
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
@@ -523,6 +569,47 @@ async function deleteBlobFromIdb(assetId: string): Promise<void> {
   } catch { /* best-effort */ }
 }
 
+// ── Draft blob helpers ────────────────────────────────────────────────────────
+
+async function saveDraftBlobsToIdb(draftId: string, original: Blob, processed: Blob | null): Promise<void> {
+  try {
+    const db = await openBlobDb();
+    const tx = db.transaction(IDB_DRAFT_STORE, 'readwrite');
+    tx.objectStore(IDB_DRAFT_STORE).put({ original, processed }, draftId);
+    await new Promise<void>((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+    db.close();
+  } catch { /* best-effort */ }
+}
+
+async function loadDraftBlobsFromIdb(draftId: string): Promise<{ original: Blob; processed: Blob | null } | null> {
+  try {
+    const db = await openBlobDb();
+    const tx = db.transaction(IDB_DRAFT_STORE, 'readonly');
+    const req = tx.objectStore(IDB_DRAFT_STORE).get(draftId);
+    const result = await new Promise<{ original: Blob; processed: Blob | null } | null>((res, rej) => {
+      req.onsuccess = () => {
+        const val = req.result;
+        if (val && val.original instanceof Blob) {
+          res({ original: val.original, processed: val.processed instanceof Blob ? val.processed : null });
+        } else { res(null); }
+      };
+      req.onerror = () => rej(req.error);
+    });
+    db.close();
+    return result;
+  } catch { return null; }
+}
+
+async function deleteDraftBlobsFromIdb(draftId: string): Promise<void> {
+  try {
+    const db = await openBlobDb();
+    const tx = db.transaction(IDB_DRAFT_STORE, 'readwrite');
+    tx.objectStore(IDB_DRAFT_STORE).delete(draftId);
+    await new Promise<void>((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+    db.close();
+  } catch { /* best-effort */ }
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ImageTool() {
@@ -530,14 +617,6 @@ export default function ImageTool() {
   const [items, setItems] = useState<ImageItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-
-  // Export settings
-  const [tw, setTw] = useState(512);
-  const [th, setTh] = useState(512);
-  const [locked, setLocked] = useState(true);
-  const [quality, setQuality] = useState(90);
-  const [format, setFormat] = useState<Format>('png');
-  const [brightness, setBrightness] = useState(100);
 
   // BG removal
   const [bgBusy, setBgBusy] = useState(false);
@@ -583,6 +662,7 @@ export default function ImageTool() {
   const [selectedPresetId, setSelectedPresetId] = useState('');
   const [storageHydrated, setStorageHydrated] = useState(false);
   const [imageLibrary, setImageLibrary] = useState<CachedImage[]>([]);
+  const [drafts, setDrafts] = useState<DraftImage[]>([]);
   const [activeTab, setActiveTab] = useState<ActiveTab>('tool');
 
   // Import from Roblox
@@ -705,10 +785,10 @@ export default function ImageTool() {
         .catch(() => { if (!cancelled) setPreviewDims(item.dims ?? null); });
     } else {
       // Normal mode: use export dimensions so preview fits the export-resolution image
-      setPreviewDims({ w: tw, h: th });
+      setPreviewDims({ w: item.exportSettings.tw, h: item.exportSettings.th });
     }
     return () => { cancelled = true; };
-  }, [items, selectedId, tw, th, touchUpOpen]);
+  }, [items, selectedId, touchUpOpen]);
 
   useEffect(() => {
     if (!touchUpOpen || spaceDown) {
@@ -793,6 +873,24 @@ export default function ImageTool() {
       // Ignore invalid local storage payloads.
     }
 
+    try {
+      const rawDrafts = window.localStorage.getItem(DRAFTS_STORAGE_KEY);
+      if (rawDrafts) {
+        const parsed = JSON.parse(rawDrafts) as unknown;
+        if (Array.isArray(parsed)) {
+          const valid = parsed.filter((e): e is DraftImage =>
+            typeof (e as DraftImage).id === 'string' &&
+            typeof (e as DraftImage).previewDataUrl === 'string' &&
+            typeof (e as DraftImage).name === 'string' &&
+            typeof (e as DraftImage).savedAt === 'number',
+          );
+          setDrafts(valid);
+        }
+      }
+    } catch {
+      // Ignore invalid local storage payloads.
+    }
+
     // Show changelog if version changed since last visit
     try {
       const lastSeen = window.localStorage.getItem(LAST_SEEN_VERSION_KEY);
@@ -834,9 +932,20 @@ export default function ImageTool() {
     }
   }, [imageLibrary, storageHydrated]);
 
+  useEffect(() => {
+    if (!storageHydrated) return;
+    try {
+      window.localStorage.setItem(DRAFTS_STORAGE_KEY, JSON.stringify(drafts));
+    } catch {
+      // Ignore localStorage write errors (private mode / quota).
+    }
+  }, [drafts, storageHydrated]);
+
   // ── Derived ──────────────────────────────────────────────────────────────────
 
   const selectedItem = items.find((i) => i.id === selectedId) ?? null;
+  const es = selectedItem?.exportSettings ?? DEFAULT_EXPORT_SETTINGS;
+  const { tw, th, format, quality, brightness, locked } = es;
   const hasItems = items.length > 0;
   const viewBase = useMemo(() => {
     const w = previewDims?.w ?? 0;
@@ -870,7 +979,8 @@ export default function ImageTool() {
     }
     let cancelled = false;
     const src = activeBlob(selectedItem);
-    canvasExport(src, tw, th, 'png', 100, brightness).then((blob) => {
+    const { tw: sTw, th: sTh, brightness: sBr } = selectedItem.exportSettings;
+    canvasExport(src, sTw, sTh, 'png', 100, sBr).then((blob) => {
       if (cancelled) return;
       setExportPreviewUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
@@ -881,7 +991,7 @@ export default function ImageTool() {
     });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedItem?.id, selectedItem?.processedBlob, selectedItem?.previewUrl, tw, th, brightness, touchUpOpen]);
+  }, [selectedItem?.id, selectedItem?.processedBlob, selectedItem?.previewUrl, selectedItem?.exportSettings, touchUpOpen]);
 
   // ── Toast ─────────────────────────────────────────────────────────────────────
 
@@ -967,6 +1077,7 @@ export default function ImageTool() {
           dims,
           bgStatus: 'idle' as BgStatus,
           pubStatus: 'idle' as PubStatus,
+          exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
         };
       }),
     );
@@ -1531,8 +1642,9 @@ export default function ImageTool() {
   // ── Export ────────────────────────────────────────────────────────────────────
 
   const getExportBlob = useCallback(async (item: ImageItem): Promise<Blob> => {
-    return canvasExport(activeBlob(item), tw, th, format, quality, brightness);
-  }, [format, tw, th, quality, brightness]);
+    const s = item.exportSettings;
+    return canvasExport(activeBlob(item), s.tw, s.th, s.format, s.quality, s.brightness);
+  }, []);
 
   // ── Download ──────────────────────────────────────────────────────────────────
 
@@ -1541,18 +1653,18 @@ export default function ImageTool() {
     if (!item) return;
     try {
       const blob = await getExportBlob(item);
-      const ext = format;
+      const s = item.exportSettings;
       const base = item.fileName.replace(/\.[^.]+$/, '') || 'image';
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${base}_${tw}x${th}.${ext}`;
+      a.download = `${base}_${s.tw}x${s.th}.${s.format}`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Download failed', 'err');
     }
-  }, [getExportBlob, format, tw, th, showToast]);
+  }, [getExportBlob, showToast]);
 
   const downloadAll = useCallback(async () => {
     if (items.length === 0) return;
@@ -1565,15 +1677,25 @@ export default function ImageTool() {
     showToast(`Downloaded ${items.length} image${items.length > 1 ? 's' : ''}`, 'ok');
   }, [items, downloadOne, showToast]);
 
-  // ── Aspect lock helpers ───────────────────────────────────────────────────────
+  // ── Per-item export setting helpers ─────────────────────────────────────────
 
+  const setExport = (patch: Partial<ExportSettings>) => {
+    if (!selectedId) return;
+    setItems((prev) => prev.map((i) =>
+      i.id === selectedId ? { ...i, exportSettings: { ...i.exportSettings, ...patch } } : i,
+    ));
+  };
   const changeW = (v: number) => {
-    setTw(v);
-    if (locked) setTh(v); // square by default; if we had per-item dims we'd use ratio
+    if (!selectedId) return;
+    const item = itemsRef.current.find((i) => i.id === selectedId);
+    if (!item) return;
+    setExport(item.exportSettings.locked ? { tw: v, th: v } : { tw: v });
   };
   const changeH = (v: number) => {
-    setTh(v);
-    if (locked) setTw(v);
+    if (!selectedId) return;
+    const item = itemsRef.current.find((i) => i.id === selectedId);
+    if (!item) return;
+    setExport(item.exportSettings.locked ? { tw: v, th: v } : { th: v });
   };
 
   // ── Image Library ─────────────────────────────────────────────────────────────
@@ -1665,6 +1787,7 @@ export default function ImageTool() {
         dims,
         bgStatus: 'idle' as BgStatus,
         pubStatus: 'idle' as PubStatus,
+        exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
       };
 
       setItems((prev) => [...prev, newItem]);
@@ -1709,6 +1832,7 @@ export default function ImageTool() {
         dims,
         bgStatus: 'idle' as BgStatus,
         pubStatus: 'idle' as PubStatus,
+        exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
       };
 
       setItems((prev) => [...prev, newItem]);
@@ -1737,6 +1861,73 @@ export default function ImageTool() {
     }
   }, [resolveLibraryBlob, showToast]);
 
+  // ── Drafts ────────────────────────────────────────────────────────────────────
+
+  const saveDraft = useCallback(async (item: ImageItem) => {
+    try {
+      const blob = activeBlob(item);
+      const previewDataUrl = await blobToThumbnailDataUrl(blob, 200);
+      const s = item.exportSettings;
+      const draft: DraftImage = {
+        id: uid(),
+        name: item.fileName.replace(/\.[^.]+$/, '') || 'image',
+        previewDataUrl,
+        savedAt: Date.now(),
+        exportSettings: { tw: s.tw, th: s.th, format: s.format, quality: s.quality, brightness: s.brightness },
+        hasBgRemoved: item.processedBlob != null,
+      };
+      setDrafts((prev) => [draft, ...prev]);
+      void saveDraftBlobsToIdb(draft.id, item.originalBlob, item.processedBlob);
+      showToast('Saved to drafts', 'ok');
+    } catch {
+      showToast('Failed to save draft', 'err');
+    }
+  }, [showToast]);
+
+  const deleteDraft = useCallback((id: string) => {
+    setDrafts((prev) => prev.filter((d) => d.id !== id));
+    void deleteDraftBlobsFromIdb(id);
+  }, []);
+
+  const loadDraft = useCallback(async (draft: DraftImage) => {
+    try {
+      const blobs = await loadDraftBlobsFromIdb(draft.id);
+      if (!blobs) {
+        showToast('Draft data not found — it may have been cleared by the browser', 'err');
+        return;
+      }
+
+      const file = new File([blobs.original], `${draft.name}.png`, { type: blobs.original.type || 'image/png' });
+      const id = uid();
+      const previewUrl = blobs.processed
+        ? URL.createObjectURL(blobs.processed)
+        : URL.createObjectURL(file);
+      let dims: { w: number; h: number } | null = null;
+      try { dims = await imgDims(file); } catch { /* ignore */ }
+
+      const newItem: ImageItem = {
+        id,
+        originalBlob: file,
+        processedBlob: blobs.processed,
+        previewUrl,
+        fileName: `${draft.name}.png`,
+        originalFileName: `${draft.name}.png`,
+        nameStatus: 'done' as NameStatus,
+        dims,
+        bgStatus: blobs.processed ? 'done' as BgStatus : 'idle' as BgStatus,
+        pubStatus: 'idle' as PubStatus,
+        exportSettings: { ...DEFAULT_EXPORT_SETTINGS, ...draft.exportSettings, locked: DEFAULT_EXPORT_SETTINGS.locked },
+      };
+
+      setItems((prev) => [...prev, newItem]);
+      setSelectedId(newItem.id);
+      setActiveTab('tool');
+      showToast(`Loaded draft "${draft.name}"`, 'ok');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Failed to load draft', 'err');
+    }
+  }, [showToast]);
+
   // ── Publish ───────────────────────────────────────────────────────────────────
 
   const publishOne = useCallback(async (id: string) => {
@@ -1756,7 +1947,7 @@ export default function ImageTool() {
       fd.append('creatorType', creatorType);
       fd.append('creatorId', creatorId.trim());
       fd.append('assetName', assetName);
-      fd.append('image', blob, `icon.${format}`);
+      fd.append('image', blob, `icon.${item.exportSettings.format}`);
 
       const res = await fetch('/api/roblox-upload', { method: 'POST', body: fd });
       const data: { assetId?: string | number; error?: string; success?: boolean } = await res.json();
@@ -1777,7 +1968,7 @@ export default function ImageTool() {
     } finally {
       setPublishing(false);
     }
-  }, [apiKey, creatorId, creatorType, format, getExportBlob, showToast, addToLibrary]);
+  }, [apiKey, creatorId, creatorType, getExportBlob, showToast, addToLibrary]);
 
   const publishAll = useCallback(async () => {
     if (items.length === 0) return;
@@ -1798,13 +1989,12 @@ export default function ImageTool() {
       try {
         const blob = await getExportBlob(item);
         const assetName = item.fileName.replace(/\.[^.]+$/, '') || 'Uploaded Icon';
-        const ext = format;
         const fd = new FormData();
         fd.append('apiKey', apiKey.trim());
         fd.append('creatorType', creatorType);
         fd.append('creatorId', creatorId.trim());
         fd.append('assetName', assetName);
-        fd.append('image', blob, `icon.${ext}`);
+        fd.append('image', blob, `icon.${item.exportSettings.format}`);
 
         const res = await fetch('/api/roblox-upload', { method: 'POST', body: fd });
         const data: { assetId?: string | number; error?: string; success?: boolean } = await res.json();
@@ -1849,7 +2039,7 @@ export default function ImageTool() {
       return;
     }
     showToast(`Publish failed: ${errorCount}/${items.length} failed`, 'err');
-  }, [items, apiKey, creatorType, creatorId, format, getExportBlob, showToast, addToLibrary]);
+  }, [items, apiKey, creatorType, creatorId, getExportBlob, showToast, addToLibrary]);
 
   const copyAssetId = useCallback((id: string) => {
     const item = items.find((i) => i.id === id);
@@ -1990,6 +2180,15 @@ export default function ImageTool() {
               Tool
             </button>
             <button
+              className={`${styles.headerTab}${activeTab === 'drafts' ? ` ${styles.headerTabActive}` : ''}`}
+              onClick={() => setActiveTab('drafts')}
+            >
+              Drafts
+              {drafts.length > 0 && (
+                <span className={styles.headerTabBadge}>{drafts.length}</span>
+              )}
+            </button>
+            <button
               className={`${styles.headerTab}${activeTab === 'library' ? ` ${styles.headerTabActive}` : ''}`}
               onClick={() => setActiveTab('library')}
             >
@@ -2011,6 +2210,19 @@ export default function ImageTool() {
               {fmtBytes(activeBlob(selectedItem).size)}
             </span>
           )}
+          {activeTab === 'drafts' && drafts.length > 0 && (
+            <button
+              className={styles.libClearBtn}
+              onClick={() => {
+                if (window.confirm('Remove all saved drafts?')) {
+                  drafts.forEach((d) => void deleteDraftBlobsFromIdb(d.id));
+                  setDrafts([]);
+                }
+              }}
+            >
+              Clear All
+            </button>
+          )}
           {activeTab === 'library' && imageLibrary.length > 0 && (
             <button
               className={styles.libClearBtn}
@@ -2028,6 +2240,59 @@ export default function ImageTool() {
           </button>
         </div>
       </header>
+
+      {/* ── Drafts Page ── */}
+      {activeTab === 'drafts' && (
+        <div className={styles.libraryPage}>
+          {drafts.length === 0 ? (
+            <div className={styles.libraryPageEmpty}>
+              <div className={styles.libraryPageEmptyIcon}>⬡</div>
+              <span className={styles.libraryPageEmptyTitle}>No saved drafts</span>
+              <span className={styles.libraryPageEmptySub}>
+                Use the &quot;Save Draft&quot; button in the preview bar to save your work-in-progress images here.
+              </span>
+            </div>
+          ) : (
+            <div className={styles.libraryPageGrid}>
+              {drafts.map((draft) => (
+                <div key={draft.id} className={styles.libraryPageCard}>
+                  <div className={styles.libraryPageThumb}>
+                    <img src={draft.previewDataUrl} alt={draft.name} className={styles.libraryPageThumbImg} />
+                    <div className={styles.libraryPageOverlay}>
+                      <button
+                        className={styles.libraryPageActionBtn}
+                        onClick={() => void loadDraft(draft)}
+                        title="Load into editor"
+                      >
+                        Load
+                      </button>
+                    </div>
+                    <button
+                      className={styles.libraryPageDeleteBtn}
+                      onClick={() => deleteDraft(draft.id)}
+                      title="Remove draft"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className={styles.libraryPageInfo}>
+                    <span className={styles.libraryPageName} title={draft.name}>{draft.name}</span>
+                    <span className={styles.draftSettingsTag}>
+                      {draft.exportSettings.tw}×{draft.exportSettings.th} · {draft.exportSettings.format.toUpperCase()}
+                    </span>
+                    {draft.hasBgRemoved && (
+                      <span className={styles.draftBgTag}>BG Removed</span>
+                    )}
+                    <span className={styles.libraryPageDate}>
+                      {new Date(draft.savedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Library Page ── */}
       {activeTab === 'library' && (
@@ -2204,6 +2469,15 @@ export default function ImageTool() {
             </span>
             <div className={styles.previewMeta}>
               {selectedItem && (
+                <button
+                  className={styles.saveDraftBtn}
+                  onClick={() => void saveDraft(selectedItem)}
+                  title="Save to drafts"
+                >
+                  Save Draft
+                </button>
+              )}
+              {selectedItem && (
                 <span className={styles.zoomTag}>{Math.round(viewZoom * 100)}%</span>
               )}
               {selectedBg && (
@@ -2324,7 +2598,7 @@ export default function ImageTool() {
                   />
                   <button
                     className={`${styles.lockBtn}${locked ? ` ${styles.locked}` : ''}`}
-                    onClick={() => setLocked(!locked)}
+                    onClick={() => setExport({ locked: !locked })}
                     title={locked ? 'Unlock aspect ratio' : 'Lock aspect ratio'}
                   >
                     {locked ? '⊟' : '⊞'}
@@ -2353,7 +2627,7 @@ export default function ImageTool() {
                   max={100}
                   value={quality}
                   disabled={format === 'png'}
-                  onChange={(e) => setQuality(Number(e.target.value))}
+                  onChange={(e) => setExport({ quality: Number(e.target.value) })}
                 />
               </div>
 
@@ -2364,7 +2638,7 @@ export default function ImageTool() {
                     <button
                       key={f}
                       className={`${styles.toggleBtn}${format === f ? ` ${styles.active}` : ''}`}
-                      onClick={() => setFormat(f)}
+                      onClick={() => setExport({ format: f })}
                     >
                       {f.toUpperCase()}
                     </button>
@@ -2393,7 +2667,7 @@ export default function ImageTool() {
                   min={0}
                   max={200}
                   value={brightness}
-                  onChange={(e) => setBrightness(Number(e.target.value))}
+                  onChange={(e) => setExport({ brightness: Number(e.target.value) })}
                 />
               </div>
             </div>
