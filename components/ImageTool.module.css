@@ -69,11 +69,20 @@
 .vBadge {
   font-size: 9px;
   font-weight: 700;
+  font-family: var(--font);
   letter-spacing: 0.12em;
   color: var(--text-muted);
   padding: 3px 7px;
   border: 1px solid var(--border);
   text-transform: uppercase;
+  background: transparent;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+
+.vBadge:hover {
+  border-color: var(--orange);
+  color: var(--orange);
 }
 
 /* ── Queue Panel ── */
@@ -1745,6 +1754,7 @@
   height: 100%;
   object-fit: contain;
   display: block;
+  image-rendering: pixelated;
 }
 
 .libraryPageDeleteBtn {
@@ -1846,4 +1856,240 @@
   font-size: 8px;
   color: var(--text-muted);
   letter-spacing: 0.06em;
+}
+
+/* ── Library Import Bar ── */
+
+.libraryImportBar {
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-mid);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.libraryImportLabel {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.libraryImportRow {
+  display: flex;
+  gap: 6px;
+}
+
+.libraryImportInput {
+  flex: 1;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-family: var(--font);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.12s;
+}
+
+.libraryImportInput:focus {
+  border-color: var(--orange);
+}
+
+.libraryImportInput::placeholder {
+  color: var(--text-muted);
+}
+
+.libraryImportInput:disabled {
+  opacity: 0.5;
+}
+
+.libraryImportBtn {
+  height: 32px;
+  padding: 0 16px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--font);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--orange);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.12s, background 0.12s;
+}
+
+.libraryImportBtn:hover:not(:disabled) {
+  background: var(--orange-dim);
+}
+
+.libraryImportBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.libraryImportHint {
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+}
+
+/* ── Library Card Overlay Actions ── */
+
+.libraryPageOverlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 10, 14, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+
+.libraryPageCard:hover .libraryPageOverlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.libraryPageActionBtn {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: var(--surface);
+  border: 1px solid var(--border-bright);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+
+.libraryPageActionBtn:hover:not(:disabled) {
+  border-color: var(--orange);
+  color: var(--orange);
+  background: var(--orange-glow);
+}
+
+.libraryPageActionBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Changelog Modal ── */
+
+.changelogPanel {
+  width: min(520px, 100%);
+  max-height: 80vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border-bright);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+  transform: translateY(10px) scale(0.985);
+  opacity: 0;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.dialogBackdrop.open .changelogPanel {
+  transform: translateY(0) scale(1);
+  opacity: 1;
+}
+
+.changelogBody {
+  overflow-y: auto;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.changelogVersion {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.changelogVersion:last-child {
+  border-bottom: none;
+}
+
+.changelogVersionHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.changelogTag {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border: 1px solid var(--border-mid);
+  color: var(--text-dim);
+}
+
+.changelogTagLatest {
+  border-color: var(--orange);
+  color: var(--orange);
+  background: var(--orange-glow);
+}
+
+.changelogDate {
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+}
+
+.changelogTitle {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.04em;
+}
+
+.changelogSection {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.changelogSectionLabel {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.changelogList {
+  margin: 0;
+  padding: 0 0 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.changelogList li {
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+}
+
+.changelogList li::marker {
+  color: var(--border-bright);
 }
