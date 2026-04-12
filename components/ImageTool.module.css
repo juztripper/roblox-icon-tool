@@ -2093,3 +2093,40 @@
 .changelogList li::marker {
   color: var(--border-bright);
 }
+
+/* ── Draft-specific styles ── */
+
+.saveDraftBtn {
+  border: 1px solid var(--border-mid);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+  white-space: nowrap;
+}
+
+.saveDraftBtn:hover {
+  color: var(--orange);
+  border-color: var(--orange);
+}
+
+.draftSettingsTag {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.draftBgTag {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--green);
+}
