@@ -20,9 +20,12 @@ const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
 const DRAFTS_STORAGE_KEY = 'pixel_forge_drafts_v1';
 const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
 const BG_MODEL_ESTIMATED_SIZE = '~170MB';
-const APP_VERSION = '4.1';
+const APP_VERSION = '4.2';
 const LAST_SEEN_VERSION_KEY = 'pixel_forge_last_seen_version';
 const THEME_STORAGE_KEY = 'pixel_forge_accent_theme_v1';
+const COLOR_MODE_STORAGE_KEY = 'pixel_forge_color_mode_v1';
+
+type ColorMode = 'system' | 'dark' | 'light';
 
 interface AccentTheme {
   id: string;
@@ -109,6 +112,20 @@ function applyAccentTheme(theme: AccentTheme) {
   root.style.setProperty('--orange-glow-strong', theme.glowStrong);
 }
 
+function resolveColorMode(mode: ColorMode): 'dark' | 'light' {
+  if (mode === 'system') {
+    if (typeof window === 'undefined' || !window.matchMedia) return 'dark';
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  return mode;
+}
+
+function applyColorMode(mode: ColorMode) {
+  if (typeof document === 'undefined') return;
+  const resolved = resolveColorMode(mode);
+  document.documentElement.setAttribute('data-theme', resolved);
+}
+
 interface ChangelogEntry {
   version: string;
   date: string;
@@ -119,6 +136,20 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '4.2',
+    date: 'Apr 22, 2026',
+    title: 'Light Mode & Appearance Toggle',
+    features: [
+      'Light mode support — every panel, control, and checker background has a matching light palette',
+      'Appearance toggle inside the theme modal with System, Dark, and Light options',
+      'System mode follows your OS preference and updates live when you switch your device theme',
+    ],
+    improvements: [
+      'Selected appearance persists across sessions via localStorage alongside the accent color',
+      'Hardcoded panel and overlay shades refactored into theme-aware CSS variables',
+    ],
+  },
   {
     version: '4.1',
     date: 'Apr 22, 2026',
@@ -778,6 +809,7 @@ export default function ImageTool() {
   // Accent theme
   const [accentThemeId, setAccentThemeId] = useState<string>(ACCENT_THEMES[0].id);
   const [themePickerOpen, setThemePickerOpen] = useState(false);
+  const [colorMode, setColorMode] = useState<ColorMode>('system');
 
   // Toast
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -1014,6 +1046,14 @@ export default function ImageTool() {
       }
     } catch { /* ignore */ }
 
+    // Color mode (dark/light/system)
+    try {
+      const storedMode = window.localStorage.getItem(COLOR_MODE_STORAGE_KEY);
+      if (storedMode === 'dark' || storedMode === 'light' || storedMode === 'system') {
+        setColorMode(storedMode);
+      }
+    } catch { /* ignore */ }
+
     setStorageHydrated(true);
   }, []);
 
@@ -1026,6 +1066,25 @@ export default function ImageTool() {
       window.localStorage.setItem(THEME_STORAGE_KEY, accentThemeId);
     } catch { /* ignore */ }
   }, [accentThemeId, storageHydrated]);
+
+  // Apply color mode and follow system changes when mode is 'system'
+  useEffect(() => {
+    applyColorMode(colorMode);
+    if (storageHydrated) {
+      try {
+        window.localStorage.setItem(COLOR_MODE_STORAGE_KEY, colorMode);
+      } catch { /* ignore */ }
+    }
+    if (colorMode !== 'system' || typeof window === 'undefined' || !window.matchMedia) return;
+    const mql = window.matchMedia('(prefers-color-scheme: light)');
+    const onChange = () => applyColorMode('system');
+    if (mql.addEventListener) mql.addEventListener('change', onChange);
+    else mql.addListener(onChange);
+    return () => {
+      if (mql.removeEventListener) mql.removeEventListener('change', onChange);
+      else mql.removeListener(onChange);
+    };
+  }, [colorMode, storageHydrated]);
 
   useEffect(() => {
     if (!storageHydrated) return;
@@ -2403,6 +2462,26 @@ export default function ImageTool() {
                       >
                         <span className={styles.themeSwatchChip} style={{ background: t.base }} />
                         <span className={styles.themeSwatchLabel}>{t.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className={styles.themePickerDivider} />
+                  <div className={styles.themePickerTitle}>Appearance</div>
+                  <div className={styles.themeModeGrid}>
+                    {([
+                      { id: 'system', label: 'System', icon: '⌁' },
+                      { id: 'dark', label: 'Dark', icon: '◐' },
+                      { id: 'light', label: 'Light', icon: '☀' },
+                    ] as { id: ColorMode; label: string; icon: string }[]).map((m) => (
+                      <button
+                        key={m.id}
+                        className={`${styles.themeModeBtn}${colorMode === m.id ? ` ${styles.themeModeBtnActive}` : ''}`}
+                        onClick={() => setColorMode(m.id)}
+                        title={`${m.label} appearance`}
+                        aria-pressed={colorMode === m.id}
+                      >
+                        <span className={styles.themeModeIcon} aria-hidden="true">{m.icon}</span>
+                        <span className={styles.themeModeLabel}>{m.label}</span>
                       </button>
                     ))}
                   </div>

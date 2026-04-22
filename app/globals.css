@@ -22,7 +22,33 @@
   --text: #d8d9e8;
   --text-dim: #6c6e88;
   --text-muted: #35374a;
+  --checker-a: #141418;
+  --checker-b: #0c0c10;
+  --scanline: rgba(0, 0, 0, 0.04);
+  --scrim: rgba(7, 8, 10, 0.85);
   --font: 'JetBrains Mono', monospace;
+}
+
+[data-theme='light'] {
+  --void: #f3f4f8;
+  --panel: #ffffff;
+  --surface: #f7f8fb;
+  --surface-2: #eceef3;
+  --border: #dcdfe6;
+  --border-mid: #c3c7d1;
+  --border-bright: #9ea3b0;
+  --green: #00a85b;
+  --green-dim: #00894a;
+  --green-glow: rgba(0, 168, 91, 0.15);
+  --red: #d82c2c;
+  --blue: #2f6fd8;
+  --text: #1b1d24;
+  --text-dim: #545869;
+  --text-muted: #8d91a0;
+  --checker-a: #dcdfe6;
+  --checker-b: #f2f3f7;
+  --scanline: rgba(0, 0, 0, 0.02);
+  --scrim: rgba(30, 35, 45, 0.45);
 }
 
 *, *::before, *::after {
@@ -62,8 +88,8 @@ body::after {
     0deg,
     transparent,
     transparent 2px,
-    rgba(0, 0, 0, 0.04) 2px,
-    rgba(0, 0, 0, 0.04) 4px
+    var(--scanline) 2px,
+    var(--scanline) 4px
   );
   pointer-events: none;
   z-index: 1;
