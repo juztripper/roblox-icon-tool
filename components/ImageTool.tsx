@@ -22,6 +22,92 @@ const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
 const BG_MODEL_ESTIMATED_SIZE = '~170MB';
 const APP_VERSION = '4.0';
 const LAST_SEEN_VERSION_KEY = 'pixel_forge_last_seen_version';
+const THEME_STORAGE_KEY = 'pixel_forge_accent_theme_v1';
+
+interface AccentTheme {
+  id: string;
+  label: string;
+  base: string;
+  dim: string;
+  hover: string;
+  light: string;
+  glow: string;
+  glowStrong: string;
+}
+
+const ACCENT_THEMES: AccentTheme[] = [
+  {
+    id: 'orange',
+    label: 'Forge',
+    base: '#ff5a1f',
+    dim: '#c44416',
+    hover: '#ff6e3a',
+    light: '#ff7b50',
+    glow: 'rgba(255, 90, 31, 0.15)',
+    glowStrong: 'rgba(255, 90, 31, 0.3)',
+  },
+  {
+    id: 'pink',
+    label: 'Adopt',
+    base: '#ff4aa3',
+    dim: '#c43778',
+    hover: '#ff63b4',
+    light: '#ff80c2',
+    glow: 'rgba(255, 74, 163, 0.15)',
+    glowStrong: 'rgba(255, 74, 163, 0.3)',
+  },
+  {
+    id: 'purple',
+    label: 'Nova',
+    base: '#a855f7',
+    dim: '#7e3fbd',
+    hover: '#b36bff',
+    light: '#c587ff',
+    glow: 'rgba(168, 85, 247, 0.15)',
+    glowStrong: 'rgba(168, 85, 247, 0.3)',
+  },
+  {
+    id: 'blue',
+    label: 'Cobalt',
+    base: '#4488ff',
+    dim: '#2a66cc',
+    hover: '#5e9aff',
+    light: '#7aaeff',
+    glow: 'rgba(68, 136, 255, 0.15)',
+    glowStrong: 'rgba(68, 136, 255, 0.3)',
+  },
+  {
+    id: 'green',
+    label: 'Slime',
+    base: '#00c853',
+    dim: '#009640',
+    hover: '#1fd96a',
+    light: '#4de88a',
+    glow: 'rgba(0, 200, 83, 0.15)',
+    glowStrong: 'rgba(0, 200, 83, 0.3)',
+  },
+  {
+    id: 'yellow',
+    label: 'Honey',
+    base: '#fbbf24',
+    dim: '#c89612',
+    hover: '#fccb4a',
+    light: '#fdd775',
+    glow: 'rgba(251, 191, 36, 0.15)',
+    glowStrong: 'rgba(251, 191, 36, 0.3)',
+  },
+];
+
+function applyAccentTheme(theme: AccentTheme) {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  root.style.setProperty('--orange', theme.base);
+  root.style.setProperty('--orange-dim', theme.dim);
+  root.style.setProperty('--orange-hover', theme.hover);
+  root.style.setProperty('--orange-light', theme.light);
+  root.style.setProperty('--orange-glow', theme.glow);
+  root.style.setProperty('--orange-glow-strong', theme.glowStrong);
+}
 
 interface ChangelogEntry {
   version: string;
@@ -672,6 +758,10 @@ export default function ImageTool() {
   // Changelog
   const [changelogOpen, setChangelogOpen] = useState(false);
 
+  // Accent theme
+  const [accentThemeId, setAccentThemeId] = useState<string>(ACCENT_THEMES[0].id);
+  const [themePickerOpen, setThemePickerOpen] = useState(false);
+
   // Toast
   const [toast, setToast] = useState<ToastState | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -899,8 +989,26 @@ export default function ImageTool() {
       }
     } catch { /* ignore */ }
 
+    // Accent theme
+    try {
+      const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+      if (stored && ACCENT_THEMES.some((t) => t.id === stored)) {
+        setAccentThemeId(stored);
+      }
+    } catch { /* ignore */ }
+
     setStorageHydrated(true);
   }, []);
+
+  // Apply accent theme whenever it changes
+  useEffect(() => {
+    const theme = ACCENT_THEMES.find((t) => t.id === accentThemeId) ?? ACCENT_THEMES[0];
+    applyAccentTheme(theme);
+    if (!storageHydrated) return;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, accentThemeId);
+    } catch { /* ignore */ }
+  }, [accentThemeId, storageHydrated]);
 
   useEffect(() => {
     if (!storageHydrated) return;
@@ -1698,6 +1806,19 @@ export default function ImageTool() {
     setExport(item.exportSettings.locked ? { tw: v, th: v } : { th: v });
   };
 
+  const applyDimensionsToAll = useCallback(() => {
+    if (!selectedId) return;
+    const source = itemsRef.current.find((i) => i.id === selectedId);
+    if (!source) return;
+    const { tw, th, locked } = source.exportSettings;
+    const count = itemsRef.current.length;
+    setItems((prev) => prev.map((i) => ({
+      ...i,
+      exportSettings: { ...i.exportSettings, tw, th, locked },
+    })));
+    showToast(`Applied ${tw}×${th} to ${count} image${count === 1 ? '' : 's'}`, 'ok');
+  }, [selectedId, showToast]);
+
   // ── Image Library ─────────────────────────────────────────────────────────────
 
   const addToLibrary = useCallback(async (item: ImageItem, assetId: string, exportBlob: Blob) => {
@@ -2231,6 +2352,47 @@ export default function ImageTool() {
               Clear All
             </button>
           )}
+          <div className={styles.themePickerWrap}>
+            <button
+              className={styles.themePickerBtn}
+              onClick={() => setThemePickerOpen((v) => !v)}
+              title="Change accent color"
+              aria-label="Change accent color"
+            >
+              <span
+                className={styles.themeSwatchDot}
+                style={{ background: (ACCENT_THEMES.find((t) => t.id === accentThemeId) ?? ACCENT_THEMES[0]).base }}
+              />
+              Theme
+            </button>
+            {themePickerOpen && (
+              <>
+                <div
+                  className={styles.themePickerBackdrop}
+                  onClick={() => setThemePickerOpen(false)}
+                />
+                <div className={styles.themePickerMenu}>
+                  <div className={styles.themePickerTitle}>Accent color</div>
+                  <div className={styles.themePickerGrid}>
+                    {ACCENT_THEMES.map((t) => (
+                      <button
+                        key={t.id}
+                        className={`${styles.themeSwatch}${accentThemeId === t.id ? ` ${styles.themeSwatchActive}` : ''}`}
+                        onClick={() => {
+                          setAccentThemeId(t.id);
+                          setThemePickerOpen(false);
+                        }}
+                        title={t.label}
+                      >
+                        <span className={styles.themeSwatchChip} style={{ background: t.base }} />
+                        <span className={styles.themeSwatchLabel}>{t.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
           <button
             className={styles.vBadge}
             onClick={() => setChangelogOpen(true)}
@@ -2477,6 +2639,11 @@ export default function ImageTool() {
                   Save Draft
                 </button>
               )}
+              {selectedItem?.dims && (
+                <span className={styles.dimsTag} title="Original image dimensions">
+                  {selectedItem.dims.w}×{selectedItem.dims.h}
+                </span>
+              )}
               {selectedItem && (
                 <span className={styles.zoomTag}>{Math.round(viewZoom * 100)}%</span>
               )}
@@ -2613,6 +2780,15 @@ export default function ImageTool() {
                     placeholder="H"
                   />
                 </div>
+                {items.length > 1 && (
+                  <button
+                    className={styles.applyAllBtn}
+                    onClick={applyDimensionsToAll}
+                    title={`Apply ${tw}×${th} to all ${items.length} images`}
+                  >
+                    Apply to all ({items.length})
+                  </button>
+                )}
               </div>
 
               <div className={styles.sliderGroup}>
