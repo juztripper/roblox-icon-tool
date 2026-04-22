@@ -20,7 +20,7 @@ const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
 const DRAFTS_STORAGE_KEY = 'pixel_forge_drafts_v1';
 const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
 const BG_MODEL_ESTIMATED_SIZE = '~170MB';
-const APP_VERSION = '4.0';
+const APP_VERSION = '4.1';
 const LAST_SEEN_VERSION_KEY = 'pixel_forge_last_seen_version';
 const THEME_STORAGE_KEY = 'pixel_forge_accent_theme_v1';
 
@@ -119,6 +119,23 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '4.1',
+    date: 'Apr 22, 2026',
+    title: 'Theme Picker, Dimensions Display & Import Fixes',
+    features: [
+      'Accent theme picker in the header — choose between Forge, Adopt, Nova, Cobalt, Slime, and Honey presets',
+      'Original image dimensions now show on the preview bar for every imported or uploaded image',
+      'Apply-to-all dimensions button copies the selected image’s width, height, and aspect lock to every image in the queue',
+    ],
+    fixes: [
+      'Roblox asset import no longer fails on the first attempt — the fetch route now polls the Thumbnails API while Roblox generates the image server-side',
+    ],
+    improvements: [
+      'Theme choice persists across sessions via localStorage',
+      'Hardcoded accent shades refactored into CSS variables so theme switches update every accented element',
+    ],
+  },
   {
     version: '4.0',
     date: 'Apr 12, 2026',
