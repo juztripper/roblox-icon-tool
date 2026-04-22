@@ -33,16 +33,36 @@ export async function GET(request: NextRequest) {
 /** Fetch via the public Thumbnails API and then upscale the CDN URL to 1024. */
 async function tryThumbnailsApi(assetId: string): Promise<NextResponse | null> {
   try {
-    const res = await fetch(
-      `https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&returnPolicy=PlaceHolder&size=420x420&format=Png`,
-    );
-    if (!res.ok) return null;
+    // Roblox often returns state: 'Pending' on the first request while it generates
+    // the thumbnail server-side. Poll a few times before giving up so the user
+    // doesn't have to re-submit the asset ID manually.
+    const maxAttempts = 5;
+    const delayMs = 600;
+    let entry: { state?: string; imageUrl?: string } | undefined;
 
-    const json = await res.json() as {
-      data?: { state?: string; imageUrl?: string }[];
-    };
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const res = await fetch(
+        `https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&returnPolicy=PlaceHolder&size=420x420&format=Png`,
+      );
+      if (!res.ok) return null;
 
-    const entry = json.data?.[0];
+      const json = await res.json() as {
+        data?: { state?: string; imageUrl?: string }[];
+      };
+
+      entry = json.data?.[0];
+      if (entry?.state === 'Completed' && entry.imageUrl) break;
+
+      // Terminal error states — don't bother retrying.
+      if (entry?.state === 'Blocked' || entry?.state === 'Error' || entry?.state === 'TemporarilyUnavailable') {
+        return null;
+      }
+
+      if (attempt < maxAttempts - 1) {
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+
     if (!entry?.imageUrl || entry.state !== 'Completed') return null;
 
     // The CDN URL embeds the size (e.g. /420/420/). Replace with 1024 for max quality.
