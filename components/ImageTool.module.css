@@ -2320,3 +2320,386 @@
   text-transform: uppercase;
   color: var(--green);
 }
+
+/* ── Mobile-only elements (hidden on desktop) ──────────────────────────────── */
+
+.mobileFab,
+.mobileDrawerBackdrop {
+  display: none;
+}
+
+/* On desktop the open-modifier classes are inert — drawers stay in their
+   natural inline position. They only take effect inside the @media block. */
+.queuePanelMobileOpen,
+.controlsMobileOpen {
+  /* no-op on desktop */
+}
+
+/* ── Mobile layout ─────────────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  /* Use dynamic viewport height so iOS Safari's collapsing URL bar doesn't clip. */
+  .app {
+    height: 100dvh;
+  }
+
+  /* Body becomes the relative containing block for the drawers + FABs. */
+  .body {
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  .header {
+    height: 44px;
+    padding: 0 10px;
+    gap: 8px;
+  }
+
+  .headerLeft {
+    flex: 1;
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .logoMark {
+    font-size: 12px;
+    letter-spacing: 0.12em;
+  }
+
+  .logoDivider {
+    display: none;
+  }
+
+  .logoSub {
+    display: none;
+  }
+
+  .headerTabs {
+    margin-left: 0;
+    flex-shrink: 0;
+  }
+
+  .headerTab {
+    padding: 0 9px;
+    font-size: 8px;
+    letter-spacing: 0.14em;
+    gap: 5px;
+  }
+
+  .headerTabBadge {
+    font-size: 7px;
+    padding: 1px 4px;
+  }
+
+  .headerRight {
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .headerMeta {
+    display: none;
+  }
+
+  .themePickerBtn,
+  .vBadge,
+  .libClearBtn {
+    padding: 3px 6px;
+    font-size: 8px;
+    letter-spacing: 0.1em;
+  }
+
+  .themePickerMenu {
+    right: 0;
+    min-width: 240px;
+    max-width: calc(100vw - 24px);
+  }
+
+  /* ── Queue drawer (slides in from the left) ── */
+  .queuePanel {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(78vw, 280px);
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    border-right: 1px solid var(--border);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.45);
+  }
+
+  .queuePanelMobileOpen {
+    transform: translateX(0);
+  }
+
+  /* ── Controls drawer (slides in from the right) ── */
+  .controls {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(86vw, 360px);
+    z-index: 50;
+    transform: translateX(100%);
+    transition: transform 0.22s ease;
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.45);
+    border-left: 1px solid var(--border);
+  }
+
+  .controlsMobileOpen {
+    transform: translateX(0);
+  }
+
+  /* Preview takes the full body width because both panels are absolutely positioned. */
+  .previewPanel {
+    border-right: none;
+  }
+
+  .previewBar {
+    padding: 6px 10px;
+    flex-wrap: wrap;
+    gap: 6px;
+    row-gap: 4px;
+  }
+
+  .previewMeta {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .previewImg {
+    padding: 14px;
+  }
+
+  /* Allow the preview image to receive single-finger pan without browser interception. */
+  .previewNavImg {
+    touch-action: none;
+  }
+
+  .emptyState {
+    gap: 10px;
+  }
+
+  .emptyIcon {
+    width: 48px;
+    height: 48px;
+    font-size: 22px;
+  }
+
+  /* ── Mobile drawer backdrop ── */
+  .mobileDrawerBackdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    background: var(--scrim);
+    z-index: 45;
+    animation: fade-in 0.18s ease;
+  }
+
+  /* ── Mobile FABs ── */
+  .mobileFab {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    position: absolute;
+    bottom: max(14px, env(safe-area-inset-bottom, 0px));
+    z-index: 30;
+    padding: 10px 14px;
+    border: 1px solid var(--border-bright);
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+    transition: border-color 0.12s, color 0.12s, background 0.12s;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobileFab:active {
+    background: var(--surface-2);
+    border-color: var(--orange);
+    color: var(--orange);
+  }
+
+  .mobileFabQueue {
+    left: 12px;
+  }
+
+  .mobileFabControls {
+    right: 12px;
+  }
+
+  .mobileFabIcon {
+    color: var(--orange);
+    font-size: 14px;
+    line-height: 1;
+  }
+
+  .mobileFabBadge {
+    margin-left: 2px;
+    padding: 1px 5px;
+    background: var(--orange);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+  }
+
+  /* ── Library page ── */
+  .libraryPage {
+    padding: 16px 14px 96px;
+  }
+
+  .libraryPageGrid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 8px;
+  }
+
+  .libraryPageThumb {
+    height: 110px;
+  }
+
+  .libraryPageDeleteBtn {
+    display: flex;
+  }
+
+  /* Tap targets reveal action overlay actions on mobile (no hover). */
+  .libraryPageOverlay {
+    opacity: 1;
+    pointer-events: auto;
+    background: linear-gradient(180deg, transparent 40%, rgba(6, 7, 10, 0.6));
+    align-items: flex-end;
+    justify-content: flex-end;
+    padding: 6px;
+  }
+
+  .libraryPageActionBtn {
+    height: 26px;
+    padding: 0 9px;
+    font-size: 8px;
+    letter-spacing: 0.08em;
+  }
+
+  .libraryImportRow {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .libraryImportInput,
+  .libraryImportBtn {
+    width: 100%;
+  }
+
+  /* ── Dialogs ── */
+  .dialogBackdrop {
+    padding: 12px;
+    align-items: flex-start;
+    padding-top: 24px;
+  }
+
+  .dialogPanel,
+  .changelogPanel {
+    max-height: calc(100dvh - 48px);
+  }
+
+  .dialogHead {
+    padding: 9px 12px;
+  }
+
+  .dialogBody {
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .presetActions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  /* ── Touch-up actions stack on narrow screens ── */
+  .touchActionsRow {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* ── Toast ── */
+  .toast {
+    bottom: max(82px, calc(env(safe-area-inset-bottom, 0px) + 70px));
+    max-width: calc(100vw - 28px);
+    font-size: 10px;
+    padding: 8px 14px;
+    white-space: normal;
+    text-align: center;
+  }
+
+  /* Slightly larger native form inputs to avoid iOS auto-zoom on focus. */
+  .input,
+  .libraryImportInput {
+    font-size: 16px;
+  }
+
+  /* Make tappable icon-style buttons a bit chunkier. */
+  .clearBtn,
+  .thumbRemoveBtn,
+  .libraryPageDeleteBtn {
+    font-size: 14px;
+  }
+
+  .thumbAddBtn {
+    height: 60px;
+    font-size: 22px;
+  }
+
+  /* Ensure long preset/select rows wrap nicely. */
+  .presetBox {
+    padding: 10px;
+  }
+}
+
+/* ── Smaller phones ────────────────────────────────────────────────────────── */
+@media (max-width: 480px) {
+  .header {
+    padding: 0 8px;
+  }
+
+  .logoMark {
+    font-size: 11px;
+  }
+
+  .headerTab {
+    padding: 0 7px;
+    font-size: 8px;
+    letter-spacing: 0.1em;
+  }
+
+  .libraryPageGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .libraryPageThumb {
+    height: 100px;
+  }
+
+  .mobileFab {
+    padding: 9px 12px;
+    font-size: 9px;
+  }
+
+  .toast {
+    font-size: 9px;
+    letter-spacing: 0.06em;
+  }
+
+  /* Side drawers can stretch wider on tiny phones. */
+  .queuePanel {
+    width: min(86vw, 260px);
+  }
+
+  .controls {
+    width: 92vw;
+  }
+}

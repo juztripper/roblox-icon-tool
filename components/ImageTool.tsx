@@ -20,7 +20,7 @@ const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
 const DRAFTS_STORAGE_KEY = 'pixel_forge_drafts_v1';
 const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
 const BG_MODEL_ESTIMATED_SIZE = '~170MB';
-const APP_VERSION = '4.2';
+const APP_VERSION = '4.3';
 const LAST_SEEN_VERSION_KEY = 'pixel_forge_last_seen_version';
 const THEME_STORAGE_KEY = 'pixel_forge_accent_theme_v1';
 const COLOR_MODE_STORAGE_KEY = 'pixel_forge_color_mode_v1';
@@ -136,6 +136,21 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '4.3',
+    date: 'May 3, 2026',
+    title: 'Mobile Support & Smarter Sizing',
+    features: [
+      'Mobile layout (≤900px) — Queue and Tools panels become slide-in drawers triggered by FABs, with backdrop dismiss and auto-close on tab change or image select',
+      'Single-finger pan on the preview image for touchscreens',
+      'New imports now seed the export width/height from the source image’s natural dimensions instead of the 512×512 default',
+    ],
+    improvements: [
+      'Disabling the aspect-ratio lock now stretches the image to fill the export canvas instead of fitting it with letterboxing',
+      'Aspect lock starts unlocked when the imported image isn’t square so editing one dimension no longer snaps to a square',
+      'Dialog, library, and import bar reflow for narrow viewports; 16px form inputs suppress iOS auto-zoom; 100dvh + safe-area-aware FAB/toast positioning for iOS Safari',
+    ],
+  },
   {
     version: '4.2',
     date: 'Apr 22, 2026',
@@ -335,6 +350,7 @@ function canvasExport(
   fmt: Format,
   quality: number,
   brightness: number = 100,
+  stretch: boolean = false,
 ): Promise<Blob> {
   return new Promise((res, rej) => {
     const img = new Image();
@@ -354,13 +370,22 @@ function canvasExport(
         rej(new Error('Image has invalid dimensions'));
         return;
       }
-      // Preserve aspect ratio: "fit" the image inside the requested output canvas
-      // without stretching/distorting.
-      const scale = Math.min(w / srcW, h / srcH);
-      const dw = srcW * scale;
-      const dh = srcH * scale;
-      const dx = (w - dw) / 2;
-      const dy = (h - dh) / 2;
+      let dx: number;
+      let dy: number;
+      let dw: number;
+      let dh: number;
+      if (stretch) {
+        dx = 0;
+        dy = 0;
+        dw = w;
+        dh = h;
+      } else {
+        const scale = Math.min(w / srcW, h / srcH);
+        dw = srcW * scale;
+        dh = srcH * scale;
+        dx = (w - dw) / 2;
+        dy = (h - dh) / 2;
+      }
       // JPEG has no alpha; give it a predictable background.
       if (fmt === 'jpeg') {
         ctx.fillStyle = '#ffffff';
@@ -811,6 +836,10 @@ export default function ImageTool() {
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [colorMode, setColorMode] = useState<ColorMode>('system');
 
+  // Mobile drawers (toggled via FABs; controlled by CSS @media rules to no-op on desktop)
+  const [mobileQueueOpen, setMobileQueueOpen] = useState(false);
+  const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
+
   // Toast
   const [toast, setToast] = useState<ToastState | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -850,6 +879,16 @@ export default function ImageTool() {
     touchUndoRef.current = [];
     touchRedoRef.current = [];
     setBrushPreview({ x: 0, y: 0, visible: false });
+  }, [selectedId]);
+
+  // Close mobile drawers when switching tabs or selecting an image so the preview is unobstructed.
+  useEffect(() => {
+    setMobileQueueOpen(false);
+    setMobileControlsOpen(false);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (selectedId) setMobileQueueOpen(false);
   }, [selectedId]);
 
   useEffect(() => {
@@ -1163,8 +1202,8 @@ export default function ImageTool() {
     }
     let cancelled = false;
     const src = activeBlob(selectedItem);
-    const { tw: sTw, th: sTh, brightness: sBr } = selectedItem.exportSettings;
-    canvasExport(src, sTw, sTh, 'png', 100, sBr).then((blob) => {
+    const { tw: sTw, th: sTh, brightness: sBr, locked: sLocked } = selectedItem.exportSettings;
+    canvasExport(src, sTw, sTh, 'png', 100, sBr, !sLocked).then((blob) => {
       if (cancelled) return;
       setExportPreviewUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
@@ -1261,7 +1300,9 @@ export default function ImageTool() {
           dims,
           bgStatus: 'idle' as BgStatus,
           pubStatus: 'idle' as PubStatus,
-          exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
+          exportSettings: dims
+            ? { ...DEFAULT_EXPORT_SETTINGS, tw: dims.w, th: dims.h, locked: dims.w === dims.h }
+            : { ...DEFAULT_EXPORT_SETTINGS },
         };
       }),
     );
@@ -1827,7 +1868,7 @@ export default function ImageTool() {
 
   const getExportBlob = useCallback(async (item: ImageItem): Promise<Blob> => {
     const s = item.exportSettings;
-    return canvasExport(activeBlob(item), s.tw, s.th, s.format, s.quality, s.brightness);
+    return canvasExport(activeBlob(item), s.tw, s.th, s.format, s.quality, s.brightness, !s.locked);
   }, []);
 
   // ── Download ──────────────────────────────────────────────────────────────────
@@ -1984,7 +2025,9 @@ export default function ImageTool() {
         dims,
         bgStatus: 'idle' as BgStatus,
         pubStatus: 'idle' as PubStatus,
-        exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
+        exportSettings: dims
+          ? { ...DEFAULT_EXPORT_SETTINGS, tw: dims.w, th: dims.h, locked: dims.w === dims.h }
+          : { ...DEFAULT_EXPORT_SETTINGS },
       };
 
       setItems((prev) => [...prev, newItem]);
@@ -2029,7 +2072,9 @@ export default function ImageTool() {
         dims,
         bgStatus: 'idle' as BgStatus,
         pubStatus: 'idle' as PubStatus,
-        exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
+        exportSettings: dims
+          ? { ...DEFAULT_EXPORT_SETTINGS, tw: dims.w, th: dims.h, locked: dims.w === dims.h }
+          : { ...DEFAULT_EXPORT_SETTINGS },
       };
 
       setItems((prev) => [...prev, newItem]);
@@ -2648,8 +2693,16 @@ export default function ImageTool() {
       {/* ── Body ── */}
       {activeTab === 'tool' && <div className={styles.body}>
 
+        {/* Mobile drawer backdrop — hidden on desktop via CSS */}
+        {(mobileQueueOpen || mobileControlsOpen) && (
+          <div
+            className={styles.mobileDrawerBackdrop}
+            onClick={() => { setMobileQueueOpen(false); setMobileControlsOpen(false); }}
+          />
+        )}
+
         {/* ── Queue Panel ── */}
-        <div className={styles.queuePanel}>
+        <div className={`${styles.queuePanel}${mobileQueueOpen ? ` ${styles.queuePanelMobileOpen}` : ''}`}>
           <div className={styles.queueHeader}>
             <span className={styles.queueHeaderLabel}>Queue</span>
             {hasItems && (
@@ -2798,7 +2851,8 @@ export default function ImageTool() {
                       imageRendering: exportPreviewUrl ? 'pixelated' : undefined,
                     }}
                     onPointerDown={(e) => {
-                      if (!spaceDown && e.button !== 1 && e.button !== 2) return;
+                      const isTouch = e.pointerType === 'touch' || e.pointerType === 'pen';
+                      if (!spaceDown && !isTouch && e.button !== 1 && e.button !== 2) return;
                       (e.target as HTMLImageElement).setPointerCapture(e.pointerId);
                       startPan(e.clientX, e.clientY);
                     }}
@@ -2837,7 +2891,7 @@ export default function ImageTool() {
         </div>
 
         {/* ── Controls ── */}
-        <aside className={styles.controls}>
+        <aside className={`${styles.controls}${mobileControlsOpen ? ` ${styles.controlsMobileOpen}` : ''}`}>
 
           {/* 01 — Export Settings */}
           <div className={styles.section}>
@@ -3160,6 +3214,27 @@ export default function ImageTool() {
           </div>
 
         </aside>
+
+        {/* Mobile FABs — hidden on desktop via CSS */}
+        <button
+          type="button"
+          className={`${styles.mobileFab} ${styles.mobileFabQueue}`}
+          onClick={() => { setMobileQueueOpen((v) => !v); setMobileControlsOpen(false); }}
+          aria-label="Toggle queue panel"
+        >
+          <span className={styles.mobileFabIcon} aria-hidden="true">⬡</span>
+          <span>Queue</span>
+          {hasItems && <span className={styles.mobileFabBadge}>{items.length}</span>}
+        </button>
+        <button
+          type="button"
+          className={`${styles.mobileFab} ${styles.mobileFabControls}`}
+          onClick={() => { setMobileControlsOpen((v) => !v); setMobileQueueOpen(false); }}
+          aria-label="Toggle tools panel"
+        >
+          <span className={styles.mobileFabIcon} aria-hidden="true">⚙</span>
+          <span>Tools</span>
+        </button>
       </div>}
 
       {/* Toast */}
