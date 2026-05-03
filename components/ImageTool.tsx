@@ -20,7 +20,7 @@ const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
 const DRAFTS_STORAGE_KEY = 'pixel_forge_drafts_v1';
 const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
 const BG_MODEL_ESTIMATED_SIZE = '~170MB';
-const APP_VERSION = '4.2';
+const APP_VERSION = '4.3';
 const LAST_SEEN_VERSION_KEY = 'pixel_forge_last_seen_version';
 const THEME_STORAGE_KEY = 'pixel_forge_accent_theme_v1';
 const COLOR_MODE_STORAGE_KEY = 'pixel_forge_color_mode_v1';
@@ -136,6 +136,21 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '4.3',
+    date: 'May 3, 2026',
+    title: 'Mobile Support & Smarter Sizing',
+    features: [
+      'Mobile layout (≤900px) — Queue and Tools panels become slide-in drawers triggered by FABs, with backdrop dismiss and auto-close on tab change or image select',
+      'Single-finger pan on the preview image for touchscreens',
+      'New imports now seed the export width/height from the source image’s natural dimensions instead of the 512×512 default',
+    ],
+    improvements: [
+      'Disabling the aspect-ratio lock now stretches the image to fill the export canvas instead of fitting it with letterboxing',
+      'Aspect lock starts unlocked when the imported image isn’t square so editing one dimension no longer snaps to a square',
+      'Dialog, library, and import bar reflow for narrow viewports; 16px form inputs suppress iOS auto-zoom; 100dvh + safe-area-aware FAB/toast positioning for iOS Safari',
+    ],
+  },
   {
     version: '4.2',
     date: 'Apr 22, 2026',
