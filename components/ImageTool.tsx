@@ -335,6 +335,7 @@ function canvasExport(
   fmt: Format,
   quality: number,
   brightness: number = 100,
+  stretch: boolean = false,
 ): Promise<Blob> {
   return new Promise((res, rej) => {
     const img = new Image();
@@ -354,13 +355,22 @@ function canvasExport(
         rej(new Error('Image has invalid dimensions'));
         return;
       }
-      // Preserve aspect ratio: "fit" the image inside the requested output canvas
-      // without stretching/distorting.
-      const scale = Math.min(w / srcW, h / srcH);
-      const dw = srcW * scale;
-      const dh = srcH * scale;
-      const dx = (w - dw) / 2;
-      const dy = (h - dh) / 2;
+      let dx: number;
+      let dy: number;
+      let dw: number;
+      let dh: number;
+      if (stretch) {
+        dx = 0;
+        dy = 0;
+        dw = w;
+        dh = h;
+      } else {
+        const scale = Math.min(w / srcW, h / srcH);
+        dw = srcW * scale;
+        dh = srcH * scale;
+        dx = (w - dw) / 2;
+        dy = (h - dh) / 2;
+      }
       // JPEG has no alpha; give it a predictable background.
       if (fmt === 'jpeg') {
         ctx.fillStyle = '#ffffff';
@@ -1177,8 +1187,8 @@ export default function ImageTool() {
     }
     let cancelled = false;
     const src = activeBlob(selectedItem);
-    const { tw: sTw, th: sTh, brightness: sBr } = selectedItem.exportSettings;
-    canvasExport(src, sTw, sTh, 'png', 100, sBr).then((blob) => {
+    const { tw: sTw, th: sTh, brightness: sBr, locked: sLocked } = selectedItem.exportSettings;
+    canvasExport(src, sTw, sTh, 'png', 100, sBr, !sLocked).then((blob) => {
       if (cancelled) return;
       setExportPreviewUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
@@ -1275,7 +1285,9 @@ export default function ImageTool() {
           dims,
           bgStatus: 'idle' as BgStatus,
           pubStatus: 'idle' as PubStatus,
-          exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
+          exportSettings: dims
+            ? { ...DEFAULT_EXPORT_SETTINGS, tw: dims.w, th: dims.h, locked: dims.w === dims.h }
+            : { ...DEFAULT_EXPORT_SETTINGS },
         };
       }),
     );
@@ -1841,7 +1853,7 @@ export default function ImageTool() {
 
   const getExportBlob = useCallback(async (item: ImageItem): Promise<Blob> => {
     const s = item.exportSettings;
-    return canvasExport(activeBlob(item), s.tw, s.th, s.format, s.quality, s.brightness);
+    return canvasExport(activeBlob(item), s.tw, s.th, s.format, s.quality, s.brightness, !s.locked);
   }, []);
 
   // ── Download ──────────────────────────────────────────────────────────────────
@@ -1998,7 +2010,9 @@ export default function ImageTool() {
         dims,
         bgStatus: 'idle' as BgStatus,
         pubStatus: 'idle' as PubStatus,
-        exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
+        exportSettings: dims
+          ? { ...DEFAULT_EXPORT_SETTINGS, tw: dims.w, th: dims.h, locked: dims.w === dims.h }
+          : { ...DEFAULT_EXPORT_SETTINGS },
       };
 
       setItems((prev) => [...prev, newItem]);
@@ -2043,7 +2057,9 @@ export default function ImageTool() {
         dims,
         bgStatus: 'idle' as BgStatus,
         pubStatus: 'idle' as PubStatus,
-        exportSettings: { ...DEFAULT_EXPORT_SETTINGS },
+        exportSettings: dims
+          ? { ...DEFAULT_EXPORT_SETTINGS, tw: dims.w, th: dims.h, locked: dims.w === dims.h }
+          : { ...DEFAULT_EXPORT_SETTINGS },
       };
 
       setItems((prev) => [...prev, newItem]);
