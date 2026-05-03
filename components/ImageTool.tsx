@@ -811,6 +811,10 @@ export default function ImageTool() {
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [colorMode, setColorMode] = useState<ColorMode>('system');
 
+  // Mobile drawers (toggled via FABs; controlled by CSS @media rules to no-op on desktop)
+  const [mobileQueueOpen, setMobileQueueOpen] = useState(false);
+  const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
+
   // Toast
   const [toast, setToast] = useState<ToastState | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -850,6 +854,16 @@ export default function ImageTool() {
     touchUndoRef.current = [];
     touchRedoRef.current = [];
     setBrushPreview({ x: 0, y: 0, visible: false });
+  }, [selectedId]);
+
+  // Close mobile drawers when switching tabs or selecting an image so the preview is unobstructed.
+  useEffect(() => {
+    setMobileQueueOpen(false);
+    setMobileControlsOpen(false);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (selectedId) setMobileQueueOpen(false);
   }, [selectedId]);
 
   useEffect(() => {
@@ -2648,8 +2662,16 @@ export default function ImageTool() {
       {/* ── Body ── */}
       {activeTab === 'tool' && <div className={styles.body}>
 
+        {/* Mobile drawer backdrop — hidden on desktop via CSS */}
+        {(mobileQueueOpen || mobileControlsOpen) && (
+          <div
+            className={styles.mobileDrawerBackdrop}
+            onClick={() => { setMobileQueueOpen(false); setMobileControlsOpen(false); }}
+          />
+        )}
+
         {/* ── Queue Panel ── */}
-        <div className={styles.queuePanel}>
+        <div className={`${styles.queuePanel}${mobileQueueOpen ? ` ${styles.queuePanelMobileOpen}` : ''}`}>
           <div className={styles.queueHeader}>
             <span className={styles.queueHeaderLabel}>Queue</span>
             {hasItems && (
@@ -2798,7 +2820,8 @@ export default function ImageTool() {
                       imageRendering: exportPreviewUrl ? 'pixelated' : undefined,
                     }}
                     onPointerDown={(e) => {
-                      if (!spaceDown && e.button !== 1 && e.button !== 2) return;
+                      const isTouch = e.pointerType === 'touch' || e.pointerType === 'pen';
+                      if (!spaceDown && !isTouch && e.button !== 1 && e.button !== 2) return;
                       (e.target as HTMLImageElement).setPointerCapture(e.pointerId);
                       startPan(e.clientX, e.clientY);
                     }}
@@ -2837,7 +2860,7 @@ export default function ImageTool() {
         </div>
 
         {/* ── Controls ── */}
-        <aside className={styles.controls}>
+        <aside className={`${styles.controls}${mobileControlsOpen ? ` ${styles.controlsMobileOpen}` : ''}`}>
 
           {/* 01 — Export Settings */}
           <div className={styles.section}>
@@ -3160,6 +3183,27 @@ export default function ImageTool() {
           </div>
 
         </aside>
+
+        {/* Mobile FABs — hidden on desktop via CSS */}
+        <button
+          type="button"
+          className={`${styles.mobileFab} ${styles.mobileFabQueue}`}
+          onClick={() => { setMobileQueueOpen((v) => !v); setMobileControlsOpen(false); }}
+          aria-label="Toggle queue panel"
+        >
+          <span className={styles.mobileFabIcon} aria-hidden="true">⬡</span>
+          <span>Queue</span>
+          {hasItems && <span className={styles.mobileFabBadge}>{items.length}</span>}
+        </button>
+        <button
+          type="button"
+          className={`${styles.mobileFab} ${styles.mobileFabControls}`}
+          onClick={() => { setMobileControlsOpen((v) => !v); setMobileQueueOpen(false); }}
+          aria-label="Toggle tools panel"
+        >
+          <span className={styles.mobileFabIcon} aria-hidden="true">⚙</span>
+          <span>Tools</span>
+        </button>
       </div>}
 
       {/* Toast */}
