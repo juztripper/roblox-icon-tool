@@ -20,7 +20,7 @@ const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
 const DRAFTS_STORAGE_KEY = 'pixel_forge_drafts_v1';
 const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
 const BG_MODEL_ESTIMATED_SIZE = '~170MB';
-const APP_VERSION = '4.3';
+const APP_VERSION = '4.3.1';
 const LAST_SEEN_VERSION_KEY = 'pixel_forge_last_seen_version';
 const THEME_STORAGE_KEY = 'pixel_forge_accent_theme_v1';
 const COLOR_MODE_STORAGE_KEY = 'pixel_forge_color_mode_v1';
@@ -136,6 +136,14 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '4.3.1',
+    date: 'May 7, 2026',
+    title: 'Background Removal Aspect Fix',
+    fixes: [
+      'Removing the background no longer distorts the subject on export — the auto-crop now pads the result back to the source aspect ratio so letterbox and stretch exports both scale uniformly',
+    ],
+  },
   {
     version: '4.3',
     date: 'May 3, 2026',
