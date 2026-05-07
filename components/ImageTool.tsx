@@ -289,7 +289,15 @@ interface ImageItem {
   originalFileName: string;
   nameStatus: NameStatus;
   dims: { w: number; h: number } | null;
-  cropRect?: { x: number; y: number; w: number; h: number } | null;
+  cropRect?: {
+    // Source rect of the subject within the original image.
+    x: number; y: number; w: number; h: number;
+    // Where the subject sits within the (possibly padded) processed canvas
+    // and the canvas's full dimensions. When omitted (legacy items) the
+    // subject is assumed to fill the processed canvas: destX=destY=0,
+    // destW=w, destH=h.
+    destX?: number; destY?: number; destW?: number; destH?: number;
+  } | null;
   bgStatus: BgStatus;
   bgError?: string;
   pubStatus: PubStatus;
@@ -498,7 +506,13 @@ async function autoCropTransparent(source: Blob, alphaThreshold = 16): Promise<B
 async function autoCropTransparentWithRect(
   source: Blob,
   alphaThreshold = 16,
-): Promise<{ blob: Blob; rect: { x: number; y: number; w: number; h: number } | null }> {
+): Promise<{
+  blob: Blob;
+  rect: {
+    x: number; y: number; w: number; h: number;
+    destX: number; destY: number; destW: number; destH: number;
+  } | null;
+}> {
   const img = await blobToImage(source);
   const srcW = img.naturalWidth;
   const srcH = img.naturalHeight;
@@ -547,16 +561,35 @@ async function autoCropTransparentWithRect(
     return { blob: source, rect: null };
   }
 
+  // Pad the cropped result back to the source aspect ratio. Without this the
+  // tight bounding box (e.g. 200×280 on a 256×256 source) gets stretched when
+  // the user later exports without aspect-lock, distorting the subject.
+  // Centering the subject in an aspect-matched canvas means subsequent export
+  // resizing is uniform regardless of lock state.
+  const srcAspect = srcW / srcH;
+  let outW = cropW;
+  let outH = cropH;
+  if (cropW / cropH > srcAspect) {
+    outH = Math.max(cropH, Math.round(cropW / srcAspect));
+  } else if (cropW / cropH < srcAspect) {
+    outW = Math.max(cropW, Math.round(cropH * srcAspect));
+  }
+  const destX = Math.round((outW - cropW) / 2);
+  const destY = Math.round((outH - cropH) / 2);
+
   const cropCanvas = document.createElement('canvas');
-  cropCanvas.width = cropW;
-  cropCanvas.height = cropH;
+  cropCanvas.width = outW;
+  cropCanvas.height = outH;
   const cropCtx = cropCanvas.getContext('2d');
   if (!cropCtx) return { blob: source, rect: null };
 
-  cropCtx.clearRect(0, 0, cropW, cropH);
-  cropCtx.drawImage(canvas, sx0, sy0, cropW, cropH, 0, 0, cropW, cropH);
+  cropCtx.clearRect(0, 0, outW, outH);
+  cropCtx.drawImage(canvas, sx0, sy0, cropW, cropH, destX, destY, cropW, cropH);
   const blob = await canvasToPngBlob(cropCanvas);
-  return { blob, rect: { x: sx0, y: sy0, w: cropW, h: cropH } };
+  return {
+    blob,
+    rect: { x: sx0, y: sy0, w: cropW, h: cropH, destX, destY, destW: outW, destH: outH },
+  };
 }
 
 function clamp(n: number, min: number, max: number): number {
@@ -1470,23 +1503,27 @@ export default function ImageTool() {
       touchOriginalRef.current = originalImg;
       const sourceCanvas = document.createElement('canvas');
       const crop = item.cropRect ?? null;
-      const sourceW = crop ? crop.w : originalImg.naturalWidth;
-      const sourceH = crop ? crop.h : originalImg.naturalHeight;
+      // Source canvas must match the touch (processed) canvas dimensions so
+      // smart-refine and restore index pixels by the same coords.
+      const sourceW = crop ? (crop.destW ?? crop.w) : originalImg.naturalWidth;
+      const sourceH = crop ? (crop.destH ?? crop.h) : originalImg.naturalHeight;
       sourceCanvas.width = sourceW;
       sourceCanvas.height = sourceH;
       const sourceCtx = sourceCanvas.getContext('2d');
       if (!sourceCtx) throw new Error('Canvas 2D context unavailable');
       if (crop) {
-        // Keep original pixel buffer aligned with the *cropped* processed canvas.
-        // Smart refine + restore assume canvas coords match originalData coords.
+        // Place the original-image subject at the same offset it occupies in
+        // the processed canvas (legacy crops without aspect padding default to
+        // (0, 0) and fully cover the canvas).
+        sourceCtx.clearRect(0, 0, sourceW, sourceH);
         sourceCtx.drawImage(
           originalImg,
           crop.x,
           crop.y,
           crop.w,
           crop.h,
-          0,
-          0,
+          crop.destX ?? 0,
+          crop.destY ?? 0,
           crop.w,
           crop.h,
         );
