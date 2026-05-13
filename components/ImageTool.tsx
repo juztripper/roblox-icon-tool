@@ -20,7 +20,7 @@ const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
 const DRAFTS_STORAGE_KEY = 'pixel_forge_drafts_v1';
 const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
 const BG_MODEL_ESTIMATED_SIZE = '~170MB';
-const APP_VERSION = '4.3.1';
+const APP_VERSION = '4.4';
 const LAST_SEEN_VERSION_KEY = 'pixel_forge_last_seen_version';
 const THEME_STORAGE_KEY = 'pixel_forge_accent_theme_v1';
 const COLOR_MODE_STORAGE_KEY = 'pixel_forge_color_mode_v1';
@@ -136,6 +136,20 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '4.4',
+    date: 'May 13, 2026',
+    title: 'Manual Image Naming',
+    features: [
+      'Rename any image manually — click the Rename button or double-click the filename in the preview bar (or queue thumbnail) to edit it inline',
+      'Re-run AI naming on demand with the new AI Name button, useful after a failed request or when you want a different suggestion',
+    ],
+    improvements: [
+      'AI auto-naming still runs by default on every import',
+      'Manual edits are sticky — an in-flight AI request won’t overwrite a name you’ve already typed',
+      'File extensions and unique-name handling are preserved automatically while editing',
+    ],
+  },
   {
     version: '4.3.1',
     date: 'May 7, 2026',
