@@ -9,7 +9,7 @@ type Format = 'png' | 'jpeg' | 'webp';
 type CreatorType = 'user' | 'group';
 type BgStatus = 'idle' | 'processing' | 'done' | 'error';
 type PubStatus = 'idle' | 'queued' | 'publishing' | 'done' | 'error';
-type NameStatus = 'idle' | 'loading' | 'done' | 'error';
+type NameStatus = 'idle' | 'loading' | 'done' | 'error' | 'manual';
 type ToastKind = 'ok' | 'err' | 'info';
 type TouchToolMode = 'erase' | 'restore';
 type ActiveTab = 'tool' | 'library' | 'drafts';
@@ -881,6 +881,11 @@ export default function ImageTool() {
   const [mobileQueueOpen, setMobileQueueOpen] = useState(false);
   const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
 
+  // Manual name editing — only one item is editable at a time, keyed by id.
+  const [editingNameId, setEditingNameId] = useState<string | null>(null);
+  const [editingNameDraft, setEditingNameDraft] = useState('');
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+
   // Toast
   const [toast, setToast] = useState<ToastState | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -931,6 +936,16 @@ export default function ImageTool() {
   useEffect(() => {
     if (selectedId) setMobileQueueOpen(false);
   }, [selectedId]);
+
+  // If the item being renamed disappears (deleted, swapped tab, etc.), drop
+  // the editing state instead of stranding the input on a missing item.
+  useEffect(() => {
+    if (!editingNameId) return;
+    if (!items.some((i) => i.id === editingNameId)) {
+      setEditingNameId(null);
+      setEditingNameDraft('');
+    }
+  }, [items, editingNameId]);
 
   useEffect(() => {
     touchUpOpenRef.current = touchUpOpen;
@@ -1272,37 +1287,45 @@ export default function ImageTool() {
   }
 
   const autoNameOne = useCallback(async (id: string, source: Blob, originalName: string) => {
-    setItems((prev) => prev.map((i) => (i.id === id ? { ...i, nameStatus: 'loading' as NameStatus } : i)));
+    // Don't clobber a name the user has typed themselves. If they renamed
+    // before the API call even starts, bail out completely.
+    let skipped = false;
+    setItems((prev) =>
+      prev.map((i) => {
+        if (i.id !== id) return i;
+        if (i.nameStatus === 'manual') { skipped = true; return i; }
+        return { ...i, nameStatus: 'loading' as NameStatus };
+      }),
+    );
+    if (skipped) return;
+
+    const applyFailure = () => {
+      setItems((prev) =>
+        prev.map((i) => {
+          if (i.id !== id) return i;
+          if (i.nameStatus === 'manual') return i;
+          return { ...i, fileName: i.originalFileName, nameStatus: 'error' as NameStatus };
+        }),
+      );
+    };
+
     try {
       const fd = new FormData();
       fd.append('image', source, 'source.png');
       const res = await fetch('/api/auto-name', { method: 'POST', body: fd });
-      if (!res.ok) {
-        setItems((prev) =>
-          prev.map((i) =>
-            i.id === id ? { ...i, fileName: i.originalFileName, nameStatus: 'error' as NameStatus } : i,
-          ),
-        );
-        return;
-      }
+      if (!res.ok) { applyFailure(); return; }
       const data = (await res.json()) as { name?: string };
       const name = (data.name ?? '').trim();
-      if (!name) {
-        setItems((prev) =>
-          prev.map((i) =>
-            i.id === id ? { ...i, fileName: i.originalFileName, nameStatus: 'error' as NameStatus } : i,
-          ),
-        );
-        return;
-      }
+      if (!name) { applyFailure(); return; }
 
       setItems((prev) => {
         const target = prev.find((i) => i.id === id);
         if (!target) return prev;
+        // User manually renamed while we were waiting — keep their name.
+        if (target.nameStatus === 'manual') return prev;
 
         const ext = splitNameAndExt(originalName).ext;
-        const nextBase = name;
-        const candidate = `${nextBase}${ext}`;
+        const candidate = `${name}${ext}`;
         const existing = prev.filter((i) => i.id !== id).map((i) => i.fileName);
         const unique = ensureUniqueFileName(candidate, existing);
         return prev.map((i) =>
@@ -1310,13 +1333,75 @@ export default function ImageTool() {
         );
       });
     } catch {
-      setItems((prev) =>
-        prev.map((i) =>
-          i.id === id ? { ...i, fileName: i.originalFileName, nameStatus: 'error' as NameStatus } : i,
-        ),
-      );
+      applyFailure();
     }
   }, []);
+
+  // Apply a user-typed name. Preserves the existing extension and de-dupes
+  // against other items so two images can't share a name.
+  const renameItem = useCallback((id: string, rawBase: string) => {
+    const trimmed = rawBase.trim();
+    if (!trimmed) return false;
+    // Strip any extension the user typed so it can't shadow the real one.
+    const typedBase = splitNameAndExt(trimmed).base || trimmed;
+    setItems((prev) => {
+      const target = prev.find((i) => i.id === id);
+      if (!target) return prev;
+      const ext = splitNameAndExt(target.fileName).ext || splitNameAndExt(target.originalFileName).ext;
+      const candidate = `${typedBase}${ext}`;
+      if (candidate === target.fileName && target.nameStatus === 'manual') return prev;
+      const existing = prev.filter((i) => i.id !== id).map((i) => i.fileName);
+      const unique = ensureUniqueFileName(candidate, existing);
+      return prev.map((i) =>
+        i.id === id ? { ...i, fileName: unique, nameStatus: 'manual' as NameStatus } : i,
+      );
+    });
+    return true;
+  }, []);
+
+  const beginEditName = useCallback((id: string) => {
+    const item = itemsRef.current.find((i) => i.id === id);
+    if (!item) return;
+    const source = item.nameStatus === 'loading' ? item.originalFileName : item.fileName;
+    setEditingNameId(id);
+    setEditingNameDraft(splitNameAndExt(source).base || source);
+    // Focus + select once the input renders.
+    requestAnimationFrame(() => {
+      const el = nameInputRef.current;
+      if (el) { el.focus(); el.select(); }
+    });
+  }, []);
+
+  const cancelEditName = useCallback(() => {
+    setEditingNameId(null);
+    setEditingNameDraft('');
+  }, []);
+
+  const commitEditName = useCallback(() => {
+    if (!editingNameId) return;
+    const applied = renameItem(editingNameId, editingNameDraft);
+    if (!applied) {
+      // Empty input — treat as cancel rather than blanking the name.
+      cancelEditName();
+      return;
+    }
+    setEditingNameId(null);
+    setEditingNameDraft('');
+  }, [editingNameId, editingNameDraft, renameItem, cancelEditName]);
+
+  // Re-run AI naming for one item (used when the user wants to try again
+  // after a failure or wants to replace their manual name).
+  const retryAutoName = useCallback((id: string) => {
+    const item = itemsRef.current.find((i) => i.id === id);
+    if (!item) return;
+    // Clear the 'manual' status so autoNameOne is willing to overwrite.
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === id ? { ...i, nameStatus: 'idle' as NameStatus } : i,
+      ),
+    );
+    void autoNameOne(id, item.originalBlob, item.originalFileName);
+  }, [autoNameOne]);
 
   // ── Add images ────────────────────────────────────────────────────────────────
 
@@ -2774,6 +2859,12 @@ export default function ImageTool() {
                     className={`${styles.thumbFileName}${
                       nameClassForItem(item) ? ` ${nameClassForItem(item)}` : ''
                     }`}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedId(item.id);
+                      beginEditName(item.id);
+                    }}
+                    title="Double-click to rename"
                   >
                     {displayNameForItem(item)}
                   </span>
@@ -2816,14 +2907,59 @@ export default function ImageTool() {
         {/* ── Preview Panel ── */}
         <div className={styles.previewPanel}>
           <div className={styles.previewBar}>
-            <span
-              className={`${styles.barLabel}${
-                selectedItem && nameClassForItem(selectedItem) ? ` ${nameClassForItem(selectedItem)}` : ''
-              }`}
-            >
-              {selectedItem ? displayNameForItem(selectedItem) : 'Preview'}
-            </span>
+            {selectedItem && editingNameId === selectedItem.id ? (
+              <div className={styles.nameEditRow}>
+                <input
+                  ref={nameInputRef}
+                  className={styles.nameEditInput}
+                  value={editingNameDraft}
+                  onChange={(e) => setEditingNameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); commitEditName(); }
+                    else if (e.key === 'Escape') { e.preventDefault(); cancelEditName(); }
+                  }}
+                  onBlur={commitEditName}
+                  spellCheck={false}
+                  aria-label="Edit image name"
+                />
+                <span className={styles.nameEditExt}>
+                  {splitNameAndExt(selectedItem.fileName).ext || splitNameAndExt(selectedItem.originalFileName).ext}
+                </span>
+              </div>
+            ) : (
+              <span
+                className={`${styles.barLabel}${
+                  selectedItem && nameClassForItem(selectedItem) ? ` ${nameClassForItem(selectedItem)}` : ''
+                }${selectedItem ? ` ${styles.barLabelEditable}` : ''}`}
+                onDoubleClick={selectedItem ? () => beginEditName(selectedItem.id) : undefined}
+                title={selectedItem ? 'Double-click to rename' : undefined}
+              >
+                {selectedItem ? displayNameForItem(selectedItem) : 'Preview'}
+              </span>
+            )}
             <div className={styles.previewMeta}>
+              {selectedItem && editingNameId !== selectedItem.id && (
+                <button
+                  type="button"
+                  className={styles.nameEditBtn}
+                  onClick={() => beginEditName(selectedItem.id)}
+                  title="Rename image"
+                  aria-label="Rename image"
+                >
+                  Rename
+                </button>
+              )}
+              {selectedItem && selectedItem.nameStatus !== 'loading' && editingNameId !== selectedItem.id && (
+                <button
+                  type="button"
+                  className={styles.nameEditBtn}
+                  onClick={() => retryAutoName(selectedItem.id)}
+                  title="Re-run AI naming"
+                  aria-label="Re-run AI naming"
+                >
+                  AI Name
+                </button>
+              )}
               {selectedItem && (
                 <button
                   className={styles.saveDraftBtn}
