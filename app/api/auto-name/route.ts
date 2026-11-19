@@ -144,6 +144,17 @@ export async function POST(request: NextRequest) {
             result = await callOpenRouter({ apiKey, models, prompt, dataUrl, disableReasoning: false, referer });
         }
 
+        // A bad OPENROUTER_IMAGE_MODEL / model override (e.g. a text-only or
+        // rerank model) shouldn't break naming — retry on the built-in vision models.
+        if (!result.ok && (result.status === 400 || result.status === 404) && primary !== DEFAULT_VISION_MODEL) {
+            console.warn(`[auto-name] Model "${primary}" failed (${result.status}), falling back to ${DEFAULT_VISION_MODEL}`);
+            const builtIn = [DEFAULT_VISION_MODEL, ...FALLBACK_VISION_MODELS].slice(0, 3);
+            result = await callOpenRouter({ apiKey, models: builtIn, prompt, dataUrl, disableReasoning: true, referer });
+            if (!result.ok && result.status === 400 && /reason/i.test(result.text)) {
+                result = await callOpenRouter({ apiKey, models: builtIn, prompt, dataUrl, disableReasoning: false, referer });
+            }
+        }
+
         if (!result.ok) {
             console.error('[auto-name] OpenRouter request failed:', result.status, result.text);
             const status = result.status === 401 || result.status === 402 || result.status === 429 ? result.status : 502;
