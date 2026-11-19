@@ -1,162 +1,169 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { DEFAULT_VISION_MODEL, FALLBACK_VISION_MODELS, parseModelNames } from '@/lib/naming';
 
-export const maxDuration = 20;
-const DEFAULT_VISION_MODEL = 'google/gemma-4-26b-a4b-it';
+export const maxDuration = 30;
 
-const OUTPUT_REGEX = /^[a-z]+(?:_[a-z]+)?$/;
-const GENERIC_WORDS = new Set([
-    'image',
-    'icon',
-    'asset',
-    'picture',
-    'thing',
-    'object',
-]);
-const SUBTYPE_MAP: Record<string, string> = {
-    bumblebee: 'bee',
-    bunny: 'rabbit',
-};
+const MODEL_ID_REGEX = /^[a-z0-9._~:/-]{3,120}$/i;
 
-function sanitizeName(raw: string): string {
-    const cleaned = raw
-        .toLowerCase()
-        .replace(/[^a-z\s_-]/g, ' ')
-        .replace(/[\s-]+/g, '_')
-        .replace(/_+/g, '_')
-        .replace(/^_+|_+$/g, '');
-
-    const parts = cleaned.split('_').filter(Boolean).slice(0, 2);
-    if (parts.length === 0) return 'unknown_icon';
-    if (parts.length === 1 && GENERIC_WORDS.has(parts[0])) return 'unknown_icon';
-    return parts.join('_');
+function buildPrompt(maxWords: number, context: string): string {
+    return [
+        'You name image assets for a Roblox game so developers can find them later.',
+        'Look at the image and name its main subject.',
+        '',
+        'Reply with ONLY a JSON object, no prose, no code fences:',
+        '{"name": "<best name>", "alternatives": ["<alt 1>", "<alt 2>", "<alt 3>"]}',
+        '',
+        'Rules for every name:',
+        `- 1 to ${maxWords} plain lowercase English words separated by spaces`,
+        '- Concrete nouns for the subject (e.g. "dragon", "energy orb", "wood crate", "gold coin")',
+        '- Add a descriptive word only when it matters for telling assets apart (material, element, state)',
+        '- Skip colour unless colour is the main thing that identifies it',
+        '- Never use generic words: image, icon, asset, picture, object, thing, illustration',
+        '- No brand names, game names or copyrighted character names',
+        '- Alternatives should be genuinely different useful names, not reorderings',
+        context ? `\nContext from the developer: ${context}` : '',
+    ].join('\n');
 }
 
-function normalizeSpecificity(name: string): string {
-    const parts = name.split('_').filter(Boolean);
-    if (parts.length === 0) return 'unknown_icon';
+type CallResult =
+    | { ok: true; model: string; content: string }
+    | { ok: false; status: number; text: string };
 
-    const normalized = parts.map((part) => SUBTYPE_MAP[part] ?? part).slice(0, 2);
-    return normalized.join('_');
+async function callOpenRouter(opts: {
+    apiKey: string;
+    models: string[];
+    prompt: string;
+    dataUrl: string;
+    disableReasoning: boolean;
+    referer: string;
+}): Promise<CallResult> {
+    const body: Record<string, unknown> = {
+        model: opts.models[0],
+        // OpenRouter tries these in order if the primary model or its providers fail.
+        models: opts.models,
+        temperature: 0.2,
+        // Generous budget: reasoning models burn tokens before answering, and a
+        // tiny max_tokens was the reason naming silently returned nothing.
+        max_tokens: 400,
+        messages: [
+            { role: 'system', content: opts.prompt },
+            {
+                role: 'user',
+                content: [
+                    { type: 'text', text: 'Name this asset.' },
+                    { type: 'image_url', image_url: { url: opts.dataUrl } },
+                ],
+            },
+        ],
+    };
+    if (opts.disableReasoning) body.reasoning = { enabled: false, exclude: true };
+
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${opts.apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': opts.referer,
+            'X-Title': 'Pixel Forge',
+        },
+        body: JSON.stringify(body),
+    });
+
+    const text = await response.text();
+    if (!response.ok) return { ok: false, status: response.status, text };
+
+    let payload: {
+        model?: string;
+        error?: { message?: string };
+        choices?: Array<{ message?: { content?: unknown } }>;
+    };
+    try {
+        payload = JSON.parse(text);
+    } catch {
+        return { ok: false, status: 502, text: 'OpenRouter returned invalid JSON' };
+    }
+    if (payload.error) return { ok: false, status: 502, text: payload.error.message ?? 'OpenRouter error' };
+
+    const raw = payload.choices?.[0]?.message?.content;
+    // Some providers return content as an array of parts.
+    const content = Array.isArray(raw)
+        ? raw.map((p) => (typeof p === 'object' && p && 'text' in p ? String((p as { text: unknown }).text) : '')).join('')
+        : typeof raw === 'string' ? raw : '';
+    return { ok: true, model: payload.model ?? opts.models[0], content };
 }
 
-function parseModelOutput(content: string): string {
-    const firstLine = content.split(/\r?\n/)[0]?.trim() ?? '';
-    const value = normalizeSpecificity(sanitizeName(firstLine));
-    return OUTPUT_REGEX.test(value) ? value : 'unknown_icon';
+/** Lets the UI show whether naming is set up on the server. */
+export async function GET() {
+    return NextResponse.json({
+        configured: Boolean(process.env.OPENROUTER_API_KEY),
+        defaultModel: process.env.OPENROUTER_IMAGE_MODEL || DEFAULT_VISION_MODEL,
+    });
 }
 
 export async function POST(request: NextRequest) {
     try {
-        const apiKey = process.env.OPENROUTER_API_KEY;
+        const formData = await request.formData();
+
+        const userKey = String(formData.get('apiKey') ?? '').trim();
+        const apiKey = userKey || process.env.OPENROUTER_API_KEY;
         if (!apiKey) {
-            return NextResponse.json({ error: 'OPENROUTER_API_KEY is not configured' }, { status: 500 });
+            return NextResponse.json(
+                { error: 'No OpenRouter key. Add OPENROUTER_API_KEY to the server env, or paste your own key in Naming settings.' },
+                { status: 400 },
+            );
         }
 
-        const formData = await request.formData();
         const imageEntry = formData.get('image');
         const imageFile = imageEntry instanceof Blob ? imageEntry : null;
         if (!imageFile) {
             return NextResponse.json({ error: 'Missing image field' }, { status: 400 });
         }
-
-        const arrayBuffer = await imageFile.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString('base64');
-        const mimeType = imageFile.type || 'image/png';
-        const requestedModel = process.env.OPENROUTER_IMAGE_MODEL || DEFAULT_VISION_MODEL;
-
-        const prompt = [
-            'You are a strict image filename generator.',
-            'Given one image, return a name for the main subject.',
-            'Output contract (must follow exactly):',
-            '- Return EXACTLY one line',
-            '- Lowercase snake_case only',
-            '- Regex must match: ^[a-z]+(?:_[a-z]+)?$',
-            '- 1 or 2 words only',
-            '- No extra text, no punctuation, no quotes, no JSON',
-            'Naming rules:',
-            '- Prefer concrete noun(s) for the main subject',
-            '- Avoid generic words: image, icon, asset, picture, object, thing',
-            '- Avoid brand names / copyrighted character names',
-            '- Specificity policy:',
-            '  - Prefer the simplest correct noun.',
-            '  - For real-world animals/objects, avoid unnecessary adjectives (especially color).',
-            '  - Do not use subtype labels unless visually unmistakable.',
-            '  - Use "bee" over "bumblebee" unless it is unmistakably a bumblebee.',
-            '  - Keep color/material only when it is clearly meaningful to identity.',
-            '- If uncertain, output: unknown_icon',
-            'Examples of valid outputs:',
-            'dragon',
-            'energy_orb',
-            'wood_crate',
-            'unknown_icon',
-        ].join('\n');
-
-        const callOpenRouter = async (model: string) => {
-            const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    model,
-                    temperature: 0.1,
-                    max_tokens: 12,
-                    messages: [
-                        { role: 'system', content: prompt },
-                        {
-                            role: 'user',
-                            content: [
-                                { type: 'text', text: 'Name this image.' },
-                                {
-                                    type: 'image_url',
-                                    image_url: {
-                                        url: `data:${mimeType};base64,${base64}`,
-                                    },
-                                },
-                            ],
-                        },
-                    ],
-                }),
-            });
-
-            if (!response.ok) {
-                const text = await response.text();
-                return { ok: false as const, model, status: response.status, text };
-            }
-
-            const payload = (await response.json()) as {
-                choices?: Array<{ message?: { content?: string } }>;
-            };
-            const content = payload.choices?.[0]?.message?.content ?? '';
-            return { ok: true as const, model, content };
-        };
-
-        const first = await callOpenRouter(requestedModel);
-        if (first.ok) {
-            const name = parseModelOutput(first.content);
-            return NextResponse.json({ name, success: true, model: first.model });
+        if (imageFile.size > 4 * 1024 * 1024) {
+            return NextResponse.json({ error: 'Image too large for naming (max 4MB)' }, { status: 413 });
         }
 
-        const shouldFallback =
-            requestedModel !== DEFAULT_VISION_MODEL &&
-            /image|vision|multimodal|input_image|image_url|unsupported/i.test(first.text);
+        const maxWords = Math.min(4, Math.max(1, Number(formData.get('maxWords')) || 2));
+        const context = String(formData.get('context') ?? '').slice(0, 300).trim();
+        const requestedModel = String(formData.get('model') ?? '').trim();
 
-        if (shouldFallback) {
-            const second = await callOpenRouter(DEFAULT_VISION_MODEL);
-            if (second.ok) {
-                const name = parseModelOutput(second.content);
-                return NextResponse.json({ name, success: true, model: second.model });
-            }
-            console.error('[auto-name] OpenRouter fallback failed:', second.status, second.text);
+        const primary = MODEL_ID_REGEX.test(requestedModel)
+            ? requestedModel
+            : process.env.OPENROUTER_IMAGE_MODEL || DEFAULT_VISION_MODEL;
+        // OpenRouter accepts at most 3 fallback models alongside the primary.
+        const models = [primary, ...FALLBACK_VISION_MODELS.filter((m) => m !== primary)].slice(0, 3);
+
+        const base64 = Buffer.from(await imageFile.arrayBuffer()).toString('base64');
+        const dataUrl = `data:${imageFile.type || 'image/png'};base64,${base64}`;
+        const prompt = buildPrompt(maxWords, context);
+        const referer = request.headers.get('origin') || 'https://pixel-forge.local';
+
+        let result = await callOpenRouter({ apiKey, models, prompt, dataUrl, disableReasoning: true, referer });
+
+        // Models that can't turn reasoning off reject the flag — retry without it.
+        if (!result.ok && result.status === 400 && /reason/i.test(result.text)) {
+            result = await callOpenRouter({ apiKey, models, prompt, dataUrl, disableReasoning: false, referer });
+        }
+
+        if (!result.ok) {
+            console.error('[auto-name] OpenRouter request failed:', result.status, result.text);
+            const status = result.status === 401 || result.status === 402 || result.status === 429 ? result.status : 502;
+            const hint =
+                result.status === 401 ? 'OpenRouter rejected the API key.'
+                : result.status === 402 ? 'OpenRouter account is out of credits.'
+                : result.status === 429 ? 'Rate limited by OpenRouter — try again in a moment.'
+                : `OpenRouter error (${result.status}).`;
+            return NextResponse.json({ error: hint, detail: result.text.slice(0, 500) }, { status });
+        }
+
+        const { name, alternatives } = parseModelNames(result.content, maxWords);
+        if (name.length === 0) {
             return NextResponse.json(
-                { error: `OpenRouter error (${second.status}): ${second.text}` },
-                { status: 502 },
+                { error: 'The model did not return a usable name', detail: result.content.slice(0, 200), model: result.model },
+                { status: 422 },
             );
         }
 
-        console.error('[auto-name] OpenRouter request failed:', first.status, first.text);
-        return NextResponse.json({ error: `OpenRouter error (${first.status}): ${first.text}` }, { status: 502 });
+        return NextResponse.json({ success: true, words: name, alternatives, model: result.model });
     } catch (err: unknown) {
         console.error('[auto-name] Error:', err);
         const msg = err instanceof Error ? err.message : 'Auto naming failed';

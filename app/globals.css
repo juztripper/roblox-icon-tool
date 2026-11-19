@@ -27,6 +27,19 @@
   --scanline: rgba(0, 0, 0, 0.04);
   --scrim: rgba(7, 8, 10, 0.85);
   --font: 'JetBrains Mono', monospace;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* Aliases used by the v5 workbench layout */
+  --bg: var(--void);
+  --raised: var(--surface-2);
+  --hover: var(--surface);
+  --line: var(--border);
+  --line-strong: var(--border-mid);
+  --ok: var(--green);
+  --err: var(--red);
+  --busy: var(--blue);
+  --accent-ink: #ffffff;
+  --shadow-pop: 0 18px 60px rgba(0, 0, 0, 0.55);
 }
 
 [data-theme='light'] {
@@ -49,6 +62,7 @@
   --checker-b: #f2f3f7;
   --scanline: rgba(0, 0, 0, 0.02);
   --scrim: rgba(30, 35, 45, 0.45);
+  --shadow-pop: 0 18px 48px rgba(20, 25, 35, 0.18);
 }
 
 *, *::before, *::after {
@@ -146,4 +160,50 @@ body::after {
 @keyframes glow-pulse {
   0%, 100% { box-shadow: 0 0 12px var(--orange-glow); }
   50% { box-shadow: 0 0 24px var(--orange-glow-strong); }
+}
+
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+a {
+  color: var(--orange);
+}
+
+:focus-visible {
+  outline: 1px solid var(--orange);
+  outline-offset: 2px;
+}
+
+kbd {
+  font-family: var(--font);
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid var(--border-mid);
+  border-bottom-width: 2px;
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
