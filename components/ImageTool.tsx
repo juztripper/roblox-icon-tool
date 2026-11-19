@@ -21,7 +21,8 @@ type PubStatus = 'idle' | 'queued' | 'publishing' | 'done' | 'error';
 type NameStatus = 'idle' | 'loading' | 'done' | 'error' | 'manual';
 type ToastKind = 'ok' | 'err' | 'info';
 type TouchToolMode = 'erase' | 'restore';
-type ActiveTab = 'tool' | 'library' | 'drafts';
+type ActiveTab = 'tool' | 'library' | 'drafts' | 'colors';
+type SampleSize = 1 | 3 | 5;
 type BgActionType = 'one' | 'all';
 type PreviewBg = 'checker' | 'grid' | 'dark' | 'light';
 type QueueFilter = 'all' | 'todo' | 'unpublished' | 'published';
@@ -33,10 +34,11 @@ const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
 const DRAFTS_STORAGE_KEY = 'pixel_forge_drafts_v1';
 const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
 const BG_MODEL_ESTIMATED_SIZE = '~170MB';
-const APP_VERSION = '5.0';
+const APP_VERSION = '5.1';
 const NAMING_STORAGE_KEY = 'pixel_forge_naming_v1';
 const OPENROUTER_KEY_STORAGE_KEY = 'pixel_forge_openrouter_key_v1';
 const UI_PREFS_STORAGE_KEY = 'pixel_forge_ui_prefs_v1';
+const PICKED_COLORS_STORAGE_KEY = 'pixel_forge_picked_colors_v1';
 const LAST_SEEN_VERSION_KEY = 'pixel_forge_last_seen_version';
 const THEME_STORAGE_KEY = 'pixel_forge_accent_theme_v1';
 const COLOR_MODE_STORAGE_KEY = 'pixel_forge_color_mode_v1';
@@ -162,6 +164,18 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '5.1',
+    date: 'Nov 18, 2026',
+    title: 'Colour Picker',
+    features: [
+      'New Colors tab — drop, paste or browse an image (or send over the workbench image), hover with a magnifier and click to pick a colour',
+      'Copy any colour as HEX, RGB, Color3.fromRGB, Color3.fromHex or CSS',
+      'Sample a single pixel or average a 3×3 / 5×5 area',
+      'Picked colours are saved in your browser and can be copied as a Luau table or a hex list',
+      'Main colours of the image are detected automatically — click one to add it',
+    ],
+  },
   {
     version: '5.0',
     date: 'Nov 18, 2026',
@@ -507,6 +521,68 @@ function triggerDownload(blob: Blob, fileName: string) {
   a.remove();
   // Revoking right away cancels the download in some browsers.
   setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+// ── Colour picker helpers ─────────────────────────────────────────────────────
+
+interface RGBA {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
+interface PickedColor extends RGBA {
+  id: string;
+  source: string;
+}
+
+function toHex({ r, g, b }: RGBA): string {
+  return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('').toUpperCase()}`;
+}
+
+function colorFormats(c: RGBA): { label: string; value: string }[] {
+  const hex = toHex(c);
+  return [
+    { label: 'HEX', value: hex },
+    { label: 'RGB', value: `${c.r}, ${c.g}, ${c.b}` },
+    { label: 'Color3', value: `Color3.fromRGB(${c.r}, ${c.g}, ${c.b})` },
+    { label: 'Hex Color3', value: `Color3.fromHex("${hex}")` },
+    { label: 'CSS', value: c.a < 255 ? `rgba(${c.r}, ${c.g}, ${c.b}, ${(c.a / 255).toFixed(2)})` : `rgb(${c.r}, ${c.g}, ${c.b})` },
+  ];
+}
+
+/** Dark text on light swatches, light text on dark ones. */
+function inkFor({ r, g, b }: RGBA): string {
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 150 ? '#111111' : '#ffffff';
+}
+
+/** Most common colours in an image — 4-bit buckets, merged when close, ignoring transparent pixels. */
+function extractPalette(img: ImageData, count = 10): RGBA[] {
+  const { data, width, height } = img;
+  const total = width * height;
+  const step = Math.max(1, Math.floor(total / 200_000));
+  const buckets = new Map<number, { r: number; g: number; b: number; n: number }>();
+  for (let i = 0; i < total; i += step) {
+    const o = i * 4;
+    if (data[o + 3] < 128) continue;
+    const key = ((data[o] >> 4) << 8) | ((data[o + 1] >> 4) << 4) | (data[o + 2] >> 4);
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.r += data[o]; bucket.g += data[o + 1]; bucket.b += data[o + 2]; bucket.n++;
+    } else {
+      buckets.set(key, { r: data[o], g: data[o + 1], b: data[o + 2], n: 1 });
+    }
+  }
+  const sorted = Array.from(buckets.values()).sort((a, b) => b.n - a.n);
+  const out: RGBA[] = [];
+  for (const bucket of sorted) {
+    const c = { r: Math.round(bucket.r / bucket.n), g: Math.round(bucket.g / bucket.n), b: Math.round(bucket.b / bucket.n), a: 255 };
+    const tooClose = out.some((o) => (o.r - c.r) ** 2 + (o.g - c.g) ** 2 + (o.b - c.b) ** 2 < 900);
+    if (!tooClose) out.push(c);
+    if (out.length >= count) break;
+  }
+  return out;
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -1118,6 +1194,20 @@ export default function ImageTool() {
   const [librarySearch, setLibrarySearch] = useState('');
   const [zipBusy, setZipBusy] = useState(false);
 
+  // Colour picker tab
+  const [pickerImage, setPickerImage] = useState<{ url: string; name: string; w: number; h: number } | null>(null);
+  const [hoverColor, setHoverColor] = useState<(RGBA & { x: number; y: number }) | null>(null);
+  const [loupePos, setLoupePos] = useState<{ x: number; y: number } | null>(null);
+  const [pickedColors, setPickedColors] = useState<PickedColor[]>([]);
+  const [activeColorId, setActiveColorId] = useState<string | null>(null);
+  const [sampleSize, setSampleSize] = useState<SampleSize>(1);
+  const [palette, setPalette] = useState<RGBA[]>([]);
+  const [pickerDragging, setPickerDragging] = useState(false);
+  const pickerCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pickerDataRef = useRef<ImageData | null>(null);
+  const loupeRef = useRef<HTMLCanvasElement | null>(null);
+  const activeTabRef = useRef<ActiveTab>('tool');
+
   // Manual name editing — only one item is editable at a time, keyed by id.
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [editingNameDraft, setEditingNameDraft] = useState('');
@@ -1415,8 +1505,30 @@ export default function ImageTool() {
       }
     } catch { /* ignore */ }
 
+    try {
+      const rawColors = window.localStorage.getItem(PICKED_COLORS_STORAGE_KEY);
+      if (rawColors) {
+        const parsed = JSON.parse(rawColors) as unknown;
+        if (Array.isArray(parsed)) {
+          setPickedColors(parsed.filter((c): c is PickedColor =>
+            typeof (c as PickedColor).id === 'string' &&
+            [(c as PickedColor).r, (c as PickedColor).g, (c as PickedColor).b].every((v) => typeof v === 'number'),
+          ).map((c) => ({ ...c, a: typeof c.a === 'number' ? c.a : 255, source: c.source ?? '' })).slice(0, 48));
+        }
+      }
+    } catch { /* ignore */ }
+
     setStorageHydrated(true);
   }, []);
+
+  useEffect(() => {
+    if (!storageHydrated) return;
+    try {
+      window.localStorage.setItem(PICKED_COLORS_STORAGE_KEY, JSON.stringify(pickedColors));
+    } catch { /* ignore */ }
+  }, [pickedColors, storageHydrated]);
+
+  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
 
   // Ask the server whether naming has a key configured.
   useEffect(() => {
@@ -1851,13 +1963,153 @@ export default function ImageTool() {
         }
       }
       if (files.length > 0) {
+        if (activeTabRef.current === 'colors') {
+          void loadPickerImage(files[0], 'Pasted image');
+          return;
+        }
         addImages(files);
         showToast(`${files.length} image${files.length > 1 ? 's' : ''} pasted`, 'ok');
       }
     };
     window.addEventListener('paste', handler);
     return () => window.removeEventListener('paste', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addImages, showToast]);
+
+  // ── Colour picker ─────────────────────────────────────────────────────────────
+
+  const loadPickerImage = useCallback(async (blob: Blob, name: string) => {
+    try {
+      const img = await blobToImage(blob);
+      const url = URL.createObjectURL(blob);
+      setPickerImage((prev) => {
+        if (prev) URL.revokeObjectURL(prev.url);
+        return { url, name, w: img.naturalWidth, h: img.naturalHeight };
+      });
+      setHoverColor(null);
+      setActiveTab('colors');
+    } catch {
+      showToast('Could not read that image', 'err');
+    }
+  }, [showToast]);
+
+  // Draw the picker image to its canvas and keep the pixels around for sampling.
+  useEffect(() => {
+    if (!pickerImage || activeTab !== 'colors') return;
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      const canvas = pickerCanvasRef.current;
+      if (cancelled || !canvas) return;
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      pickerDataRef.current = data;
+      setPalette(extractPalette(data));
+    };
+    img.src = pickerImage.url;
+    return () => { cancelled = true; };
+  }, [pickerImage, activeTab]);
+
+  useEffect(() => () => {
+    if (pickerImage) URL.revokeObjectURL(pickerImage.url);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const sampleAt = useCallback((clientX: number, clientY: number): (RGBA & { x: number; y: number }) | null => {
+    const canvas = pickerCanvasRef.current;
+    const data = pickerDataRef.current;
+    if (!canvas || !data) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const x = Math.floor(((clientX - rect.left) / rect.width) * data.width);
+    const y = Math.floor(((clientY - rect.top) / rect.height) * data.height);
+    if (x < 0 || y < 0 || x >= data.width || y >= data.height) return null;
+    const half = Math.floor(sampleSize / 2);
+    let r = 0, g = 0, b = 0, a = 0, n = 0;
+    for (let dy = -half; dy <= half; dy++) {
+      for (let dx = -half; dx <= half; dx++) {
+        const sx = x + dx;
+        const sy = y + dy;
+        if (sx < 0 || sy < 0 || sx >= data.width || sy >= data.height) continue;
+        const o = (sy * data.width + sx) * 4;
+        r += data.data[o]; g += data.data[o + 1]; b += data.data[o + 2]; a += data.data[o + 3];
+        n++;
+      }
+    }
+    return { r: Math.round(r / n), g: Math.round(g / n), b: Math.round(b / n), a: Math.round(a / n), x, y };
+  }, [sampleSize]);
+
+  const drawLoupe = useCallback((x: number, y: number) => {
+    const loupe = loupeRef.current;
+    const canvas = pickerCanvasRef.current;
+    if (!loupe || !canvas) return;
+    const ctx = loupe.getContext('2d');
+    if (!ctx) return;
+    const cells = 11;
+    const cell = loupe.width / cells;
+    const half = Math.floor(cells / 2);
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, loupe.width, loupe.height);
+    ctx.drawImage(canvas, x - half, y - half, cells, cells, 0, 0, loupe.width, loupe.height);
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 2;
+    const box = cell * sampleSize;
+    const start = (half - Math.floor(sampleSize / 2)) * cell;
+    ctx.strokeRect(start, start, box, box);
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(start - 1.5, start - 1.5, box + 3, box + 3);
+  }, [sampleSize]);
+
+  const handlePickerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    const c = sampleAt(e.clientX, e.clientY);
+    setHoverColor(c);
+    const stage = (e.currentTarget.parentElement as HTMLElement | null)?.getBoundingClientRect();
+    if (c && stage) {
+      setLoupePos({ x: e.clientX - stage.left, y: e.clientY - stage.top });
+      drawLoupe(c.x, c.y);
+    } else {
+      setLoupePos(null);
+    }
+  }, [sampleAt, drawLoupe]);
+
+  const addPickedColor = useCallback((c: RGBA, source: string) => {
+    const id = uid();
+    setPickedColors((prev) => {
+      // Don't stack the same colour twice in a row.
+      if (prev[0] && toHex(prev[0]) === toHex(c)) {
+        setActiveColorId(prev[0].id);
+        return prev;
+      }
+      setActiveColorId(id);
+      return [{ id, r: c.r, g: c.g, b: c.b, a: c.a, source }, ...prev].slice(0, 48);
+    });
+  }, []);
+
+  const handlePickerClick = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    const c = sampleAt(e.clientX, e.clientY);
+    if (!c) return;
+    addPickedColor(c, pickerImage?.name ?? '');
+  }, [sampleAt, addPickedColor, pickerImage]);
+
+  const copyColorValue = useCallback(async (value: string) => {
+    const ok = await copyText(value);
+    showToast(ok ? `Copied ${value}` : 'Clipboard blocked by the browser', ok ? 'ok' : 'err');
+  }, [showToast]);
+
+  const copyAllColors = useCallback(async (fmt: 'lua' | 'hex') => {
+    if (pickedColors.length === 0) return;
+    const text = fmt === 'lua'
+      ? `return {\n${pickedColors.map((c) => `\tColor3.fromRGB(${c.r}, ${c.g}, ${c.b}), -- ${toHex(c)}`).join('\n')}\n}\n`
+      : pickedColors.map((c) => toHex(c)).join('\n');
+    const ok = await copyText(text);
+    showToast(ok ? `Copied ${pickedColors.length} colour${pickedColors.length === 1 ? '' : 's'}` : 'Clipboard blocked by the browser', ok ? 'ok' : 'err');
+  }, [pickedColors, showToast]);
 
   // ── Drag & drop ───────────────────────────────────────────────────────────────
 
@@ -3078,6 +3330,7 @@ export default function ImageTool() {
             { id: 'tool', label: 'Workbench', count: items.length },
             { id: 'drafts', label: 'Drafts', count: drafts.length },
             { id: 'library', label: 'Library', count: imageLibrary.length },
+            { id: 'colors', label: 'Colors', count: pickedColors.length },
           ] as { id: ActiveTab; label: string; count: number }[]).map((t) => (
             <button
               key={t.id}
@@ -3317,6 +3570,206 @@ export default function ImageTool() {
           )}
         </div>
       )}
+
+      {/* ── Colour picker ── */}
+      {activeTab === 'colors' && (() => {
+        const activeColor = pickedColors.find((c) => c.id === activeColorId) ?? pickedColors[0] ?? null;
+        return (
+          <div className={styles.body}>
+            <div className={cx(styles.stagePanel, styles.pickerStagePanel)}>
+              <div
+                className={cx(styles.stage, styles.stage_checker, pickerDragging && styles.dragging)}
+                onDragOver={(e) => { e.preventDefault(); setPickerDragging(true); }}
+                onDragLeave={() => setPickerDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setPickerDragging(false);
+                  const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith('image/'));
+                  if (file) void loadPickerImage(file, file.name);
+                }}
+              >
+                {pickerImage ? (
+                  <div className={styles.pickerWrap}>
+                    <canvas
+                      ref={pickerCanvasRef}
+                      className={styles.pickerCanvas}
+                      onPointerMove={handlePickerMove}
+                      onPointerLeave={() => { setHoverColor(null); setLoupePos(null); }}
+                      onPointerUp={handlePickerClick}
+                      aria-label={`Image to pick colours from: ${pickerImage.name}`}
+                    />
+                    <canvas
+                      ref={loupeRef}
+                      width={132}
+                      height={132}
+                      className={styles.loupe}
+                      style={{
+                        left: loupePos ? loupePos.x + 18 : 0,
+                        top: loupePos ? loupePos.y + 18 : 0,
+                        opacity: loupePos ? 1 : 0,
+                      }}
+                      aria-hidden="true"
+                    />
+                  </div>
+                ) : (
+                  <label className={styles.stageEmpty}>
+                    <span className={styles.stageEmptyTitle}>Drop an image to pick colours</span>
+                    <span className={styles.stageEmptySub}>Or paste a screenshot with Ctrl+V. Hover to inspect, click to pick.</span>
+                    <span className={cx(styles.btn, styles.btnPrimary)}>Browse files</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className={styles.hiddenInput}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) void loadPickerImage(f, f.name);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                )}
+              </div>
+              <div className={styles.stageBar}>
+                <div className={styles.segmented} role="group" aria-label="Sample size">
+                  {([1, 3, 5] as SampleSize[]).map((n) => (
+                    <button
+                      key={n}
+                      className={cx(styles.segment, sampleSize === n && styles.segmentActive)}
+                      onClick={() => setSampleSize(n)}
+                      aria-pressed={sampleSize === n}
+                      title={n === 1 ? 'Exact pixel' : `Average of a ${n}×${n} area`}
+                    >
+                      {n === 1 ? '1 px' : `${n}×${n} avg`}
+                    </button>
+                  ))}
+                </div>
+                <label className={cx(styles.btn, styles.btnSmall)}>
+                  {pickerImage ? 'Change image' : 'Browse'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className={styles.hiddenInput}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void loadPickerImage(f, f.name);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+                {selectedItem && (
+                  <button
+                    className={cx(styles.btn, styles.btnSmall)}
+                    onClick={() => void loadPickerImage(activeBlob(selectedItem), selectedItem.fileName)}
+                    title="Pick colours from the image selected on the workbench"
+                  >
+                    Use workbench image
+                  </button>
+                )}
+                <span className={styles.stageBarMeta}>
+                  {hoverColor
+                    ? `x ${hoverColor.x}  y ${hoverColor.y}  ${toHex(hoverColor)}${hoverColor.a < 255 ? `  α ${hoverColor.a}` : ''}`
+                    : pickerImage ? `${pickerImage.name}  ${pickerImage.w}×${pickerImage.h}` : ''}
+                </span>
+              </div>
+            </div>
+
+            <aside className={styles.inspector}>
+              <div className={styles.pickerLive}>
+                <div
+                  className={styles.pickerLiveSwatch}
+                  style={{ background: hoverColor ? `rgba(${hoverColor.r}, ${hoverColor.g}, ${hoverColor.b}, ${hoverColor.a / 255})` : undefined }}
+                />
+                <div className={styles.pickerLiveText}>
+                  <span className={styles.label}>Under cursor</span>
+                  <span className={styles.pickerLiveHex}>{hoverColor ? toHex(hoverColor) : '—'}</span>
+                  <span className={styles.mutedText}>{hoverColor ? `RGB ${hoverColor.r}, ${hoverColor.g}, ${hoverColor.b}` : 'Hover over the image'}</span>
+                </div>
+              </div>
+
+              <Section num="01" title="Selected" open onToggle={() => {}} aside={activeColor ? toHex(activeColor) : undefined}>
+                {activeColor ? (
+                  <>
+                    <div
+                      className={styles.pickerBigSwatch}
+                      style={{ background: toHex(activeColor), color: inkFor(activeColor) }}
+                    >
+                      {toHex(activeColor)}
+                    </div>
+                    <div className={styles.formatList}>
+                      {colorFormats(activeColor).map((f) => (
+                        <button key={f.label} className={styles.formatRow} onClick={() => void copyColorValue(f.value)} title="Copy">
+                          <span className={styles.formatLabel}>{f.label}</span>
+                          <span className={styles.formatValue}>{f.value}</span>
+                          <span className={styles.formatCopy}>Copy</span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <p className={styles.mutedText}>Click anywhere on the image to pick a colour.</p>
+                )}
+              </Section>
+
+              <Section num="02" title="Picked" open onToggle={() => {}} aside={pickedColors.length ? `${pickedColors.length}` : undefined}>
+                {pickedColors.length === 0 ? (
+                  <p className={styles.mutedText}>Colours you pick are saved here in this browser.</p>
+                ) : (
+                  <>
+                    <div className={styles.colorGrid}>
+                      {pickedColors.map((c) => (
+                        <div key={c.id} className={styles.colorCell}>
+                          <button
+                            className={cx(styles.colorSwatch, activeColor?.id === c.id && styles.colorSwatchActive)}
+                            style={{ background: toHex(c) }}
+                            onClick={() => setActiveColorId(c.id)}
+                            title={`${toHex(c)}${c.source ? ` from ${c.source}` : ''}`}
+                            aria-label={`Select ${toHex(c)}`}
+                          />
+                          <button
+                            className={styles.colorRemove}
+                            onClick={() => setPickedColors((prev) => prev.filter((p) => p.id !== c.id))}
+                            aria-label={`Remove ${toHex(c)}`}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className={styles.btnRow}>
+                      <button className={cx(styles.btn, styles.btnSmall)} onClick={() => void copyAllColors('lua')}>Copy as Luau</button>
+                      <button className={cx(styles.btn, styles.btnSmall)} onClick={() => void copyAllColors('hex')}>Copy hex list</button>
+                      <button
+                        className={cx(styles.btn, styles.btnSmall, styles.btnQuiet)}
+                        onClick={() => { setPickedColors([]); setActiveColorId(null); }}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </>
+                )}
+              </Section>
+
+              {pickerImage && palette.length > 0 && (
+                <Section num="03" title="Main colours" open onToggle={() => {}}>
+                  <div className={styles.colorGrid}>
+                    {palette.map((c) => (
+                      <button
+                        key={toHex(c)}
+                        className={styles.colorSwatch}
+                        style={{ background: toHex(c) }}
+                        onClick={() => addPickedColor(c, `${pickerImage.name} palette`)}
+                        title={`${toHex(c)} — click to add`}
+                        aria-label={`Add ${toHex(c)}`}
+                      />
+                    ))}
+                  </div>
+                  <p className={styles.mutedText}>The most common colours in this image. Click one to add it.</p>
+                </Section>
+              )}
+            </aside>
+          </div>
+        );
+      })()}
 
       {/* ── Workbench ── */}
       {activeTab === 'tool' && <div className={styles.body}>
