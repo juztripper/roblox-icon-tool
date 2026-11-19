@@ -8,7 +8,7 @@ A browser workbench for getting images into Roblox: cut out backgrounds, name th
 - **Background removal in the browser** — RMBG-1.4 via `@huggingface/transformers` (WebGPU with WASM fallback). Nothing is uploaded. Includes alpha bleeding so edges don't get dark halos on Roblox, plus a touch-up brush with smart colour-aware erase/restore.
 - **AI naming** — a vision model on OpenRouter names each image and suggests alternatives. Choose snake_case, PascalCase, camelCase, kebab-case or Title Case, word count, prefix/suffix, and give it context about your game.
 - **Export controls** — size presets (1024, 512, 256, 128, 1920×1080, original), aspect lock, padding, brightness, solid background fill, PNG/JPG/WebP.
-- **Preview on a cutting mat** — the export frame is drawn on the mat at its real size. Switch to checker, dark or light backgrounds, and hold Compare (or C) to see the original.
+- **Live export preview** — the export frame is drawn at its real size. Switch between checker, dot grid, dark or light backgrounds, and hold Compare (or C) to see the original.
 - **Publish to Roblox** — user or group uploads, saved accounts, skip already-published images, automatic follow-up for uploads Roblox is still processing.
 - **Copy IDs** as a Luau module, JSON or a plain list. Download everything as one ZIP (includes `asset_ids.lua` when images are published).
 - **Drafts and library** — saved locally in the browser (localStorage + IndexedDB). Import any Roblox image by asset ID.

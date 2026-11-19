@@ -23,7 +23,7 @@ type ToastKind = 'ok' | 'err' | 'info';
 type TouchToolMode = 'erase' | 'restore';
 type ActiveTab = 'tool' | 'library' | 'drafts';
 type BgActionType = 'one' | 'all';
-type PreviewBg = 'mat' | 'checker' | 'dark' | 'light';
+type PreviewBg = 'checker' | 'grid' | 'dark' | 'light';
 type QueueFilter = 'all' | 'todo' | 'unpublished' | 'published';
 type IdFormat = 'lua' | 'json' | 'list';
 type InspectorSection = 'name' | 'size' | 'look' | 'cutout' | 'publish' | 'export';
@@ -58,7 +58,7 @@ interface AccentTheme {
 const ACCENT_THEMES: AccentTheme[] = [
   {
     id: 'orange',
-    ink: '#1a0a03',
+    ink: '#ffffff',
     label: 'Forge',
     base: '#ff5a1f',
     dim: '#c44416',
@@ -69,7 +69,7 @@ const ACCENT_THEMES: AccentTheme[] = [
   },
   {
     id: 'pink',
-    ink: '#1f0612',
+    ink: '#ffffff',
     label: 'Adopt',
     base: '#ff4aa3',
     dim: '#c43778',
@@ -102,7 +102,7 @@ const ACCENT_THEMES: AccentTheme[] = [
   },
   {
     id: 'green',
-    ink: '#03170b',
+    ink: '#ffffff',
     label: 'Slime',
     base: '#00c853',
     dim: '#009640',
@@ -124,7 +124,7 @@ const ACCENT_THEMES: AccentTheme[] = [
   },
 ];
 
-const DEFAULT_ACCENT = ACCENT_THEMES.find((t) => t.id === 'yellow') ?? ACCENT_THEMES[0];
+const DEFAULT_ACCENT = ACCENT_THEMES[0];
 
 function applyAccentTheme(theme: AccentTheme) {
   if (typeof document === 'undefined') return;
@@ -165,15 +165,15 @@ const CHANGELOG: ChangelogEntry[] = [
   {
     version: '5.0',
     date: 'Nov 18, 2026',
-    title: 'Workbench Redesign & Working AI Naming',
+    title: 'Workbench Layout & Working AI Naming',
     features: [
-      'New workbench layout — cutting-mat preview with a live export frame, a two-column queue with filters, and a collapsible inspector',
+      'Reworked workbench layout — preview with a live export frame, a two-column queue with filters, and a collapsible inspector',
       'Naming settings — pick snake_case, PascalCase, camelCase, kebab-case or Title Case, word count, prefix/suffix and a context hint for your game',
       'AI naming now suggests alternatives you can swap in with one click, plus an AI Name All button',
       'Download all as a single ZIP, with an asset_ids.lua module included when images are published',
       'Copy published IDs as a Luau table, JSON or a plain list — from the workbench or the library',
       'Size presets for common Roblox uses, padding around the subject and an optional background fill',
-      'Preview on mat, checkerboard, dark or light backgrounds, and hold Compare to see the original',
+      'Preview on checkerboard, dot grid, dark or light backgrounds, and hold Compare to see the original',
       'Keyboard shortcuts — press ? to see them',
       'Library search and filtering',
     ],
@@ -426,8 +426,8 @@ const SIZE_PRESETS: SizePreset[] = [
 const FILL_SWATCHES = ['#ffffff', '#000000', '#1e2129', '#ffd166', '#5ec2ff', '#ff6b8b'];
 
 const PREVIEW_BGS: { id: PreviewBg; label: string }[] = [
-  { id: 'mat', label: 'Mat' },
   { id: 'checker', label: 'Checker' },
+  { id: 'grid', label: 'Grid' },
   { id: 'dark', label: 'Dark' },
   { id: 'light', label: 'Light' },
 ];
@@ -1004,7 +1004,8 @@ async function deleteDraftBlobsFromIdb(draftId: string): Promise<void> {
 
 // ── Inspector section ───────────────────────────────────────────────────────
 
-function Section({ title, aside, open, onToggle, children }: {
+function Section({ num, title, aside, open, onToggle, children }: {
+  num: string;
   title: string;
   aside?: React.ReactNode;
   open: boolean;
@@ -1015,6 +1016,7 @@ function Section({ title, aside, open, onToggle, children }: {
     <section className={`${styles.section}${open ? ` ${styles.sectionOpen}` : ''}`}>
       <button type="button" className={styles.sectionHead} onClick={onToggle} aria-expanded={open}>
         <span className={styles.sectionChevron} aria-hidden="true" />
+        <span className={styles.sectionNum}>{num}</span>
         <span className={styles.sectionTitle}>{title}</span>
         {aside && <span className={styles.sectionAside}>{aside}</span>}
       </button>
@@ -1086,7 +1088,7 @@ export default function ImageTool() {
   const [changelogOpen, setChangelogOpen] = useState(false);
 
   // Accent theme
-  const [accentThemeId, setAccentThemeId] = useState<string>('yellow');
+  const [accentThemeId, setAccentThemeId] = useState<string>(ACCENT_THEMES[0].id);
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [colorMode, setColorMode] = useState<ColorMode>('system');
 
@@ -1105,7 +1107,7 @@ export default function ImageTool() {
   useEffect(() => { openRouterKeyRef.current = openRouterKey; }, [openRouterKey]);
 
   // Workbench UI
-  const [previewBg, setPreviewBg] = useState<PreviewBg>('mat');
+  const [previewBg, setPreviewBg] = useState<PreviewBg>('checker');
   const [comparing, setComparing] = useState(false);
   const [queueFilter, setQueueFilter] = useState<QueueFilter>('all');
   const [openSections, setOpenSections] = useState<Record<InspectorSection, boolean>>({
@@ -3509,7 +3511,7 @@ export default function ImageTool() {
               </div>
             ) : (
               <label className={styles.stageEmpty}>
-                <span className={styles.stageEmptyTitle}>Drop images on the mat</span>
+                <span className={styles.stageEmptyTitle}>Drop images here</span>
                 <span className={styles.stageEmptySub}>PNG, JPG or WebP. Paste screenshots straight from your clipboard.</span>
                 <span className={cx(styles.btn, styles.btnPrimary)}>Browse files</span>
                 <input type="file" accept="image/*" multiple className={styles.hiddenInput} onChange={handleFileChange} />
@@ -3581,7 +3583,7 @@ export default function ImageTool() {
             </div>
           ) : (
             <>
-              <Section open={openSections.name} onToggle={() => toggleSection('name')} title="Name" aside={selectedItem.nameStatus === 'manual' ? 'Edited' : selectedItem.nameStatus === 'done' ? 'AI' : undefined}>
+              <Section num="01" open={openSections.name} onToggle={() => toggleSection('name')} title="Name" aside={selectedItem.nameStatus === 'manual' ? 'Edited' : selectedItem.nameStatus === 'done' ? 'AI' : undefined}>
                 {editingNameId === selectedItem.id ? (
                   <div className={styles.nameEditRow}>
                     <input
@@ -3645,7 +3647,7 @@ export default function ImageTool() {
                 </div>
               </Section>
 
-              <Section open={openSections.size} onToggle={() => toggleSection('size')} title="Size" aside={`${tw}×${th}`}>
+              <Section num="02" open={openSections.size} onToggle={() => toggleSection('size')} title="Size" aside={`${tw}×${th}`}>
                 <div className={styles.presetRow}>
                   {SIZE_PRESETS.map((p) => (
                     <button
@@ -3692,7 +3694,7 @@ export default function ImageTool() {
                 )}
               </Section>
 
-              <Section open={openSections.look} onToggle={() => toggleSection('look')} title="Look" aside={es.fill || es.padding || brightness !== 100 ? 'Adjusted' : undefined}>
+              <Section num="03" open={openSections.look} onToggle={() => toggleSection('look')} title="Look" aside={es.fill || es.padding || brightness !== 100 ? 'Adjusted' : undefined}>
                 <div className={styles.field}>
                   <div className={styles.fieldRow}>
                     <span className={styles.label}>Padding</span>
@@ -3741,7 +3743,7 @@ export default function ImageTool() {
                 )}
               </Section>
 
-              <Section open={openSections.cutout} onToggle={() => toggleSection('cutout')} title="Cut out" aside={selectedBg ? 'Done' : undefined}>
+              <Section num="04" open={openSections.cutout} onToggle={() => toggleSection('cutout')} title="Cut out" aside={selectedBg ? 'Done' : undefined}>
                 {!touchUpOpen ? (
                   <>
                     <div className={styles.btnRow}>
@@ -3804,7 +3806,7 @@ export default function ImageTool() {
                 )}
               </Section>
 
-              <Section open={openSections.publish} onToggle={() => toggleSection('publish')} title="Publish to Roblox" aside={finishedCount > 0 ? `${finishedCount}/${items.length}` : undefined}>
+              <Section num="05" open={openSections.publish} onToggle={() => toggleSection('publish')} title="Publish to Roblox" aside={finishedCount > 0 ? `${finishedCount}/${items.length}` : undefined}>
                 {!publishReady && (
                   <p className={styles.mutedText}>
                     Connect a Roblox API key first.{' '}
@@ -3852,7 +3854,7 @@ export default function ImageTool() {
                 )}
               </Section>
 
-              <Section open={openSections.export} onToggle={() => toggleSection('export')} title="Export" aside={format.toUpperCase()}>
+              <Section num="06" open={openSections.export} onToggle={() => toggleSection('export')} title="Export" aside={format.toUpperCase()}>
                 <div className={styles.segmented}>
                   {(['png', 'jpeg', 'webp'] as Format[]).map((f) => (
                     <button key={f} className={cx(styles.segment, format === f && styles.segmentActive)} onClick={() => setExport({ format: f })}>
