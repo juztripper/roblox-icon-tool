@@ -1,24 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { pollOperation } from '@/lib/robloxOperation';
 
 export const maxDuration = 30;
 
-async function pollOperation(operationPath: string, apiKey: string): Promise<string | null> {
-  const maxAttempts = 15;
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise((r) => setTimeout(r, 1500));
-
-    const res = await fetch(`https://apis.roblox.com/assets/v1/${operationPath}`, {
-      headers: { 'x-api-key': apiKey },
-    });
-
-    if (!res.ok) continue;
-
-    const data = await res.json();
-    if (data.done && data.response) {
-      return data.response.assetId ?? null;
-    }
-  }
-  return null;
+// Roblox rejects display names over 50 characters and some punctuation.
+function sanitizeDisplayName(raw: string): string {
+  const cleaned = raw
+    .replace(/[^\p{L}\p{N} _.'()-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 50)
+    .trim();
+  return cleaned || 'Uploaded Icon';
 }
 
 export async function POST(request: NextRequest) {
@@ -28,7 +21,8 @@ export async function POST(request: NextRequest) {
     const apiKey = formData.get('apiKey') as string;
     const creatorType = formData.get('creatorType') as string;
     const creatorId = formData.get('creatorId') as string;
-    const assetName = (formData.get('assetName') as string) || 'Uploaded Icon';
+    const assetName = sanitizeDisplayName((formData.get('assetName') as string) || '');
+    const description = ((formData.get('description') as string) || 'Uploaded via Pixel Forge').slice(0, 1000);
     const imageEntry = formData.get('image');
     const imageFile = imageEntry instanceof Blob ? imageEntry : null;
     const imageName =
@@ -49,7 +43,7 @@ export async function POST(request: NextRequest) {
     const requestPayload = {
       assetType: 'Image',
       displayName: assetName,
-      description: 'Uploaded via PIXEL FORGE',
+      description,
       creationContext: { creator },
     };
 
@@ -67,7 +61,7 @@ export async function POST(request: NextRequest) {
 
     if (!uploadRes.ok) {
       return NextResponse.json(
-        { error: `Roblox API error (${uploadRes.status}): ${uploadText}` },
+        { error: describeRobloxError(uploadRes.status, uploadText) },
         { status: uploadRes.status }
       );
     }
@@ -87,13 +81,14 @@ export async function POST(request: NextRequest) {
 
     // Long-running operation — poll
     if (result.path) {
-      const assetId = await pollOperation(result.path as string, apiKey);
+      const assetId = await pollOperation(result.path as string, apiKey, 12);
       if (assetId) {
         return NextResponse.json({ assetId, success: true });
       }
       return NextResponse.json(
         {
-          error: 'Asset is still processing. Check Roblox Creator Hub for the uploaded asset.',
+          error: 'Asset is still processing on Roblox.',
+          pending: true,
           operationPath: result.path,
         },
         { status: 202 }
@@ -105,4 +100,16 @@ export async function POST(request: NextRequest) {
     console.error('[roblox-upload] Error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
+}
+
+function describeRobloxError(status: number, body: string): string {
+  let message = body;
+  try {
+    const parsed = JSON.parse(body) as { message?: string; errors?: { message?: string }[] };
+    message = parsed.message ?? parsed.errors?.[0]?.message ?? body;
+  } catch { /* keep raw body */ }
+  if (status === 401) return 'Roblox rejected the API key. Check it was copied fully and hasn\'t expired.';
+  if (status === 403) return `API key is missing permission or isn't allowed for this creator: ${message}`;
+  if (status === 429) return 'Roblox rate limit hit — wait a minute and publish again.';
+  return `Roblox API error (${status}): ${message}`;
 }

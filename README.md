@@ -1,269 +1,92 @@
-# PIXEL FORGE — Roblox Batch Image Tool
+# Pixel Forge — Roblox Icon Tool
 
-A modern web application for batch processing game icons and images for Roblox. Upload multiple images, remove backgrounds, resize with quality control, and publish directly to Roblox using the Open Cloud API—all with a sleek, dark industrial UI.
+A browser workbench for getting images into Roblox: cut out backgrounds, name them with AI, size them for icons and thumbnails, and publish them straight to Roblox through Open Cloud — then copy the asset IDs into your game as a Luau table.
 
-## Features
+## What it does
 
-- **Batch Image Processing** — Upload multiple images and process them together
-- **AI Background Removal** — Remove backgrounds using on-device ONNX Runtime (no external API calls)
-- **Smart Resizing** — Scale images with adjustable dimensions and quality settings
-- **Roblox Publishing** — Publish images directly to Roblox as Decal assets and retrieve asset IDs
-- **Format Control** — Choose output format (PNG, JPEG) and quality levels
-- **Download Support** — Export processed images to your computer
-- **Clipboard Paste** — Paste images directly from clipboard (Ctrl+V / Cmd+V)
-- **Dark Industrial UI** — JetBrains Mono typography, orange accents, dot-grid backgrounds
+- **Batch queue** — drop, paste (Ctrl/Cmd+V) or browse for any number of images. Filter by not cut out, unpublished or published.
+- **Background removal in the browser** — RMBG-1.4 via `@huggingface/transformers` (WebGPU with WASM fallback). Nothing is uploaded. Includes alpha bleeding so edges don't get dark halos on Roblox, plus a touch-up brush with smart colour-aware erase/restore.
+- **AI naming** — a vision model on OpenRouter names each image and suggests alternatives. Choose snake_case, PascalCase, camelCase, kebab-case or Title Case, word count, prefix/suffix, and give it context about your game.
+- **Export controls** — size presets (1024, 512, 256, 128, 1920×1080, original), aspect lock, padding, brightness, solid background fill, PNG/JPG/WebP.
+- **Preview on a cutting mat** — the export frame is drawn on the mat at its real size. Switch to checker, dark or light backgrounds, and hold Compare (or C) to see the original.
+- **Publish to Roblox** — user or group uploads, saved accounts, skip already-published images, automatic follow-up for uploads Roblox is still processing.
+- **Copy IDs** as a Luau module, JSON or a plain list. Download everything as one ZIP (includes `asset_ids.lua` when images are published).
+- **Drafts and library** — saved locally in the browser (localStorage + IndexedDB). Import any Roblox image by asset ID.
+- Light/dark/system appearance, accent colours, keyboard shortcuts (press `?`), mobile layout.
 
-## Tech Stack
+## Setup
 
-- **Framework:** Next.js 14 (App Router)
-- **Language:** TypeScript
-- **Styling:** CSS Modules with CSS variables
-- **Background Removal:** `@imgly/background-removal-node` (server-side ONNX Runtime)
-- **Image Processing:** HTML5 Canvas API
-- **API Integration:** Roblox Open Cloud Assets v1 API
-- **Deployment:** Vercel
-
-## Quick Start
-
-### Prerequisites
-
-- Node.js 18+
-- npm or yarn
-
-### Installation
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/juztripper/roblox-icon-tool.git
-   cd roblox-icon-tool
-   ```
-
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-3. Set up environment variables:
-   Create a `.env.local` file in the root directory:
-   ```
-   # Roblox Open Cloud API credentials
-   NEXT_PUBLIC_ROBLOX_UNIVERSE_ID=your_universe_id
-   ROBLOX_API_KEY=your_api_key
-   OPENROUTER_API_KEY=your_openrouter_api_key
-   # Optional override (defaults to google/gemma-4-26b-a4b-it)
-   OPENROUTER_IMAGE_MODEL=google/gemma-4-26b-a4b-it
-   ```
-
-4. Start the development server:
-   ```bash
-   npm run dev
-   ```
-
-5. Open [http://localhost:3000](http://localhost:3000) in your browser
-
-## Roblox Setup
-
-To use the publishing feature, you'll need to configure Roblox Open Cloud:
-
-1. Go to [Creator Dashboard](https://create.roblox.com/)
-2. Create or select your experience
-3. Navigate to **Settings → Open Cloud Keys**
-4. Create a new API key with scope: **Asset:Read, Asset:Create**
-5. Copy your Universe ID and API key
-6. Add them to `.env.local` (see Installation step 3)
-
-## Usage
-
-### Batch Workflow
-
-1. **Add Images** — Click the **+** button in the queue panel or drag-and-drop multiple files
-2. **Preview** — Click any thumbnail to preview the full image
-3. **Remove Backgrounds** — Click "REMOVE BG FROM ALL" to process all images sequentially
-4. **Adjust Settings** — Set export dimensions, quality, and format in the right panel
-5. **Publish** — Click "PUBLISH ALL" to upload to Roblox and retrieve asset IDs
-6. **Copy & Download** — Copy asset IDs or download processed images locally
-
-### Keyboard Shortcuts
-
-- **Ctrl+V / Cmd+V** — Paste images from clipboard
-- **Drag & Drop** — Drop files onto the preview panel to add to queue
-
-## Architecture
-
-### Project Structure
-
-```
-roblox-icon-tool/
-├── app/
-│   ├── api/
-│   │   ├── remove-background/route.ts    # Background removal API
-│   │   ├── auto-name/route.ts            # AI filename generation API
-│   │   └── roblox-upload/route.ts        # Roblox publishing API
-│   ├── globals.css                       # Global styles & CSS variables
-│   ├── layout.tsx                        # Root layout
-│   └── page.tsx                          # Main page
-├── components/
-│   ├── ImageTool.tsx                     # Main component (batch processing)
-│   └── ImageTool.module.css              # Component styles
-├── next.config.js                        # Next.js configuration
-├── tsconfig.json                         # TypeScript configuration
-└── package.json
-```
-
-### Key Components
-
-**ImageTool.tsx** — Core component managing:
-- Image queue state (multiple items)
-- Per-item background removal progress
-- Per-item Roblox publishing status
-- Batch operations (remove BG all, publish all)
-- Object URL lifecycle management
-
-**API Routes:**
-- `/api/remove-background` — Server-side ONNX-based background removal
-- `/api/roblox-upload` — Proxies image uploads to Roblox Open Cloud
-
-### Design System
-
-The UI uses a cohesive dark industrial aesthetic:
-- **Color Variables:** Orange (#FF5A1F) for primary actions, green (#00E87B) for success, red (#FF4444) for errors
-- **Typography:** JetBrains Mono for consistent monospace styling
-- **Animations:** Dot-grid backgrounds, spin/shimmer animations, smooth transitions
-- **Layout:** 3-panel design (queue, preview, controls)
-
-## Build & Deployment
-
-### Local Build
+Requires Node.js 18+.
 
 ```bash
-npm run build
-npm start
+npm install
+npm run dev
 ```
 
-### Deploy to Vercel
+Create `.env.local`:
 
-1. Push your code to GitHub:
-   ```bash
-   git add .
-   git commit -m "Deploy PIXEL FORGE"
-   git push origin main
-   ```
+```bash
+# AI naming (https://openrouter.ai/keys). Optional — users can also paste
+# their own key in Naming settings instead.
+OPENROUTER_API_KEY=sk-or-...
 
-2. Connect your repository to Vercel:
-   - Go to [vercel.com](https://vercel.com)
-   - Click "New Project" and import your GitHub repository
-   - Set environment variables in Vercel dashboard:
-     - `NEXT_PUBLIC_ROBLOX_UNIVERSE_ID`
-     - `ROBLOX_API_KEY`
-
-3. Deploy (automatic on push to main, or manual via Vercel dashboard)
-
-## API Reference
-
-### POST /api/remove-background
-
-Removes the background from an image using ONNX Runtime.
-
-**Request:**
-- Form data with `image` field (Blob/File)
-
-**Response:**
-- 200: PNG image with transparent background
-- 400: Missing image field
-- 500: Processing error
-
-**Example:**
-```javascript
-const formData = new FormData();
-formData.append('image', imageBlob);
-const response = await fetch('/api/remove-background', { method: 'POST', body: formData });
-const resultBlob = await response.blob();
+# Optional: override the default vision model
+# OPENROUTER_IMAGE_MODEL=google/gemini-3.5-flash-lite
 ```
 
-### POST /api/roblox-upload
+Roblox credentials are **not** environment variables — each user enters their Open Cloud API key and user/group ID in the app's publish settings, and they're stored only in their browser.
 
-Publishes an image to Roblox as a Decal asset.
+### AI naming model
 
-**Request:**
-```json
-{
-  "image": "base64-encoded-png",
-  "assetName": "MyIcon",
-  "creatorType": "User",
-  "creatorId": 123456
-}
+The default model is `google/gemini-3.5-flash-lite`, with `qwen/qwen3.7-flash` and `google/gemma-4-26b-a4b-it` as automatic OpenRouter fallbacks. You can change the model per-browser in Naming settings → Model and API key, or server-wide with `OPENROUTER_IMAGE_MODEL`. Any OpenRouter model that accepts image input works.
+
+Naming previously broke because the old default was a reasoning model called with `max_tokens: 12` — the reasoning used up the budget and the answer came back empty. The route now disables reasoning where possible, allows a larger budget, and parses JSON, code fences and plain-text answers.
+
+### Roblox API key
+
+1. Go to [Creator Hub → Credentials](https://create.roblox.com/dashboard/credentials) and create an API key.
+2. Add the **Assets** API with read and write access, for your account or the group you upload to.
+3. Allow the IP addresses your site runs from (`0.0.0.0/0` for a hosted deployment).
+4. Paste the key and your user or group ID into the app's publish settings.
+
+## Keyboard shortcuts
+
+| Key | Action |
+| --- | --- |
+| ↑ / ↓ | Previous / next image |
+| B | Remove background |
+| N | AI name selected image |
+| R or F2 | Rename |
+| D | Download selected |
+| C (hold) | Compare with original |
+| Delete | Remove from queue |
+| Ctrl/Cmd+Z | Undo touch-up stroke (Shift to redo) |
+| Space + drag | Pan |
+| ? | Show shortcuts |
+
+## Project structure
+
+```
+app/
+  api/auto-name/route.ts          AI naming via OpenRouter (GET reports whether a key is configured)
+  api/roblox-upload/route.ts      Uploads to Roblox Open Cloud Assets v1
+  api/roblox-operation/route.ts   Follow-up check for uploads still processing
+  api/roblox-fetch-image/route.ts Fetches an existing Roblox image by asset ID
+  globals.css                     Theme tokens (light/dark, accent)
+components/
+  ImageTool.tsx                   The whole app UI and client logic
+  ImageTool.module.css            Workbench styles
+lib/
+  bgRemoval.ts                    In-browser background removal
+  naming.ts                       Name parsing and formatting (shared client/server)
+  robloxOperation.ts              Open Cloud operation polling
+  zip.ts                          Dependency-free ZIP writer
 ```
 
-**Response:**
-```json
-{
-  "assetId": "123456789",
-  "name": "MyIcon",
-  "status": "Published"
-}
-```
+## Deploying to Vercel
 
-## Troubleshooting
-
-### "Unsupported format" Error
-
-This occurs when the background removal API can't detect the image format. Ensure:
-- Image is a valid PNG, JPG, or JPEG
-- File is passed as Blob (not Buffer) to preserve MIME type
-- The server and client agree on image format
-
-### "Missing environment variables"
-
-Make sure `.env.local` contains:
-```
-NEXT_PUBLIC_ROBLOX_UNIVERSE_ID=your_id
-ROBLOX_API_KEY=your_key
-```
-
-Restart the dev server after updating environment variables.
-
-### Background Removal is Slow (First Run)
-
-On first use, the ONNX model (~40MB) downloads from imgly's CDN and is cached. Subsequent runs are faster.
-
-## Performance Notes
-
-- Batch processing is sequential (not parallel) to prevent timeouts on Vercel
-- Maximum 45s per operation on Vercel Pro (due to function timeout)
-- Large batches (10+ images) may take several minutes total
-- Background removal model is cached locally per deployment
-
-## Development
-
-### Testing Locally
-
-1. Create test images or download samples
-2. Use the UI to test batch workflows
-3. Monitor the browser console and Network tab for API calls
-4. Check server logs: `npm run dev` outputs API route logs
-
-### Debugging
-
-Enable verbose logging by adding to `.env.local`:
-```
-DEBUG=*
-```
-
-### Code Style
-
-- TypeScript for type safety
-- CSS Modules for scoped styling
-- React hooks for state management
-- Server-side API routes for sensitive operations
+Import the repo in Vercel and set `OPENROUTER_API_KEY` (and optionally `OPENROUTER_IMAGE_MODEL`). Images are downscaled to 512px before naming so requests stay well under Vercel's 4.5MB body limit.
 
 ## License
 
 MIT
-
-## Author
-
-Created for efficient Roblox game icon management.
-
----
-
-**Questions?** Check the [Roblox Creator Hub](https://create.roblox.com/) or review this project's inline code comments for implementation details.

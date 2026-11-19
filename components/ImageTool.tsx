@@ -2,6 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './ImageTool.module.css';
+import {
+  DEFAULT_NAMING_OPTIONS,
+  DEFAULT_VISION_MODEL,
+  NAME_STYLE_LABELS,
+  buildName,
+  type NameStyle,
+  type NamingOptions,
+} from '../lib/naming';
+import { createZip, type ZipEntry } from '../lib/zip';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -14,13 +23,20 @@ type ToastKind = 'ok' | 'err' | 'info';
 type TouchToolMode = 'erase' | 'restore';
 type ActiveTab = 'tool' | 'library' | 'drafts';
 type BgActionType = 'one' | 'all';
+type PreviewBg = 'mat' | 'checker' | 'dark' | 'light';
+type QueueFilter = 'all' | 'todo' | 'unpublished' | 'published';
+type IdFormat = 'lua' | 'json' | 'list';
+type InspectorSection = 'name' | 'size' | 'look' | 'cutout' | 'publish' | 'export';
 const RBLX_SETTINGS_STORAGE_KEY = 'pixel_forge_publish_settings_v1';
 const RBLX_PRESETS_STORAGE_KEY = 'pixel_forge_publish_presets_v1';
 const RBLX_LIBRARY_STORAGE_KEY = 'pixel_forge_image_library_v1';
 const DRAFTS_STORAGE_KEY = 'pixel_forge_drafts_v1';
 const BG_MODEL_NOTICE_ACK_KEY = 'pixel_forge_bg_model_notice_ack_v1';
 const BG_MODEL_ESTIMATED_SIZE = '~170MB';
-const APP_VERSION = '4.4';
+const APP_VERSION = '5.0';
+const NAMING_STORAGE_KEY = 'pixel_forge_naming_v1';
+const OPENROUTER_KEY_STORAGE_KEY = 'pixel_forge_openrouter_key_v1';
+const UI_PREFS_STORAGE_KEY = 'pixel_forge_ui_prefs_v1';
 const LAST_SEEN_VERSION_KEY = 'pixel_forge_last_seen_version';
 const THEME_STORAGE_KEY = 'pixel_forge_accent_theme_v1';
 const COLOR_MODE_STORAGE_KEY = 'pixel_forge_color_mode_v1';
@@ -30,6 +46,7 @@ type ColorMode = 'system' | 'dark' | 'light';
 interface AccentTheme {
   id: string;
   label: string;
+  ink: string;
   base: string;
   dim: string;
   hover: string;
@@ -41,6 +58,7 @@ interface AccentTheme {
 const ACCENT_THEMES: AccentTheme[] = [
   {
     id: 'orange',
+    ink: '#1a0a03',
     label: 'Forge',
     base: '#ff5a1f',
     dim: '#c44416',
@@ -51,6 +69,7 @@ const ACCENT_THEMES: AccentTheme[] = [
   },
   {
     id: 'pink',
+    ink: '#1f0612',
     label: 'Adopt',
     base: '#ff4aa3',
     dim: '#c43778',
@@ -61,6 +80,7 @@ const ACCENT_THEMES: AccentTheme[] = [
   },
   {
     id: 'purple',
+    ink: '#ffffff',
     label: 'Nova',
     base: '#a855f7',
     dim: '#7e3fbd',
@@ -71,6 +91,7 @@ const ACCENT_THEMES: AccentTheme[] = [
   },
   {
     id: 'blue',
+    ink: '#ffffff',
     label: 'Cobalt',
     base: '#4488ff',
     dim: '#2a66cc',
@@ -81,6 +102,7 @@ const ACCENT_THEMES: AccentTheme[] = [
   },
   {
     id: 'green',
+    ink: '#03170b',
     label: 'Slime',
     base: '#00c853',
     dim: '#009640',
@@ -91,6 +113,7 @@ const ACCENT_THEMES: AccentTheme[] = [
   },
   {
     id: 'yellow',
+    ink: '#1f1600',
     label: 'Honey',
     base: '#fbbf24',
     dim: '#c89612',
@@ -101,6 +124,8 @@ const ACCENT_THEMES: AccentTheme[] = [
   },
 ];
 
+const DEFAULT_ACCENT = ACCENT_THEMES.find((t) => t.id === 'yellow') ?? ACCENT_THEMES[0];
+
 function applyAccentTheme(theme: AccentTheme) {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
@@ -110,6 +135,7 @@ function applyAccentTheme(theme: AccentTheme) {
   root.style.setProperty('--orange-light', theme.light);
   root.style.setProperty('--orange-glow', theme.glow);
   root.style.setProperty('--orange-glow-strong', theme.glowStrong);
+  root.style.setProperty('--accent-ink', theme.ink);
 }
 
 function resolveColorMode(mode: ColorMode): 'dark' | 'light' {
@@ -136,6 +162,33 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '5.0',
+    date: 'Nov 18, 2026',
+    title: 'Workbench Redesign & Working AI Naming',
+    features: [
+      'New workbench layout — cutting-mat preview with a live export frame, a two-column queue with filters, and a collapsible inspector',
+      'Naming settings — pick snake_case, PascalCase, camelCase, kebab-case or Title Case, word count, prefix/suffix and a context hint for your game',
+      'AI naming now suggests alternatives you can swap in with one click, plus an AI Name All button',
+      'Download all as a single ZIP, with an asset_ids.lua module included when images are published',
+      'Copy published IDs as a Luau table, JSON or a plain list — from the workbench or the library',
+      'Size presets for common Roblox uses, padding around the subject and an optional background fill',
+      'Preview on mat, checkerboard, dark or light backgrounds, and hold Compare to see the original',
+      'Keyboard shortcuts — press ? to see them',
+      'Library search and filtering',
+    ],
+    fixes: [
+      'AI naming works again — new default vision model with automatic fallbacks, reasoning turned off so answers aren’t cut off, and much more forgiving output parsing',
+      'Images are shrunk before being sent for naming, so large files no longer fail on Vercel’s upload limit',
+      'Naming requests are throttled so big batches don’t hit rate limits',
+      'Publish All skips images that are already published instead of uploading duplicates',
+      'Uploads that are still processing on Roblox are re-checked automatically instead of showing as failed',
+      'Asset names are trimmed to Roblox’s 50-character limit before upload',
+      'Pasted and imported images get unique names instead of all being called pasted.png',
+      'Downloads no longer occasionally fail in Firefox and Safari',
+      'Undo/redo in touch-up now works with Cmd on macOS',
+    ],
+  },
   {
     version: '4.4',
     date: 'May 13, 2026',
@@ -289,6 +342,7 @@ interface DraftImage {
   exportSettings: {
     tw: number; th: number;
     format: Format; quality: number; brightness: number;
+    padding?: number; fill?: string | null; locked?: boolean;
   };
   hasBgRemoved: boolean;
 }
@@ -300,6 +354,10 @@ interface ExportSettings {
   quality: number;
   brightness: number;
   locked: boolean;
+  // Empty space around the subject, as a percentage of the shorter side.
+  padding: number;
+  // Solid background colour behind the subject, or null for transparent.
+  fill: string | null;
 }
 
 interface ImageItem {
@@ -310,6 +368,10 @@ interface ImageItem {
   fileName: string;
   originalFileName: string;
   nameStatus: NameStatus;
+  // Raw words from the AI so the name can be re-styled without another request.
+  nameWords?: string[];
+  nameAlts?: string[][];
+  nameError?: string;
   dims: { w: number; h: number } | null;
   cropRect?: {
     // Source rect of the subject within the original image.
@@ -325,6 +387,7 @@ interface ImageItem {
   pubStatus: PubStatus;
   pubAssetId?: string;
   pubError?: string;
+  pubOperationPath?: string;
   exportSettings: ExportSettings;
 }
 
@@ -342,8 +405,118 @@ interface PublishPreset {
 }
 
 const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
-  tw: 512, th: 512, format: 'png', quality: 90, brightness: 100, locked: true,
+  tw: 512, th: 512, format: 'png', quality: 90, brightness: 100, locked: true, padding: 0, fill: null,
 };
+
+interface SizePreset {
+  label: string;
+  hint: string;
+  w: number;
+  h: number;
+}
+
+const SIZE_PRESETS: SizePreset[] = [
+  { label: '1024', hint: 'Max decal size', w: 1024, h: 1024 },
+  { label: '512', hint: 'Game icon, badge, pass', w: 512, h: 512 },
+  { label: '256', hint: 'UI icon', w: 256, h: 256 },
+  { label: '128', hint: 'Small UI icon', w: 128, h: 128 },
+  { label: '1920×1080', hint: 'Game thumbnail', w: 1920, h: 1080 },
+];
+
+const FILL_SWATCHES = ['#ffffff', '#000000', '#1e2129', '#ffd166', '#5ec2ff', '#ff6b8b'];
+
+const PREVIEW_BGS: { id: PreviewBg; label: string }[] = [
+  { id: 'mat', label: 'Mat' },
+  { id: 'checker', label: 'Checker' },
+  { id: 'dark', label: 'Dark' },
+  { id: 'light', label: 'Light' },
+];
+
+const SHORTCUTS: { keys: string; action: string }[] = [
+  { keys: '↑ / ↓', action: 'Previous / next image' },
+  { keys: 'B', action: 'Remove background' },
+  { keys: 'N', action: 'AI name selected image' },
+  { keys: 'R or F2', action: 'Rename selected image' },
+  { keys: 'D', action: 'Download selected image' },
+  { keys: 'C (hold)', action: 'Compare with original' },
+  { keys: 'Delete', action: 'Remove from queue' },
+  { keys: 'Ctrl/Cmd + Z', action: 'Undo touch-up stroke (Shift to redo)' },
+  { keys: 'Space + drag', action: 'Pan the preview' },
+  { keys: '?', action: 'Show shortcuts' },
+];
+
+// ── AI naming throttle ────────────────────────────────────────────────────────
+// Large batches used to fire every request at once and get rate limited.
+
+const NAME_CONCURRENCY = 3;
+let nameActive = 0;
+const nameWaiters: (() => void)[] = [];
+
+async function withNameSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (nameActive >= NAME_CONCURRENCY) {
+    await new Promise<void>((resolve) => nameWaiters.push(resolve));
+  }
+  nameActive++;
+  try {
+    return await fn();
+  } finally {
+    nameActive--;
+    nameWaiters.shift()?.();
+  }
+}
+
+/** Shrink an image before sending it for naming — keeps requests small and fast. */
+async function downscaleForNaming(source: Blob, maxSide = 512): Promise<Blob> {
+  const img = await blobToImage(source);
+  const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+  const w = Math.max(1, Math.round(img.naturalWidth * scale));
+  const h = Math.max(1, Math.round(img.naturalHeight * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return source;
+  // Vision models see transparency as black; a neutral grey keeps both dark
+  // and light subjects readable.
+  ctx.fillStyle = '#d9d9d9';
+  ctx.fillRect(0, 0, w, h);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, w, h);
+  return new Promise((resolve) => {
+    canvas.toBlob((b) => resolve(b ?? source), 'image/jpeg', 0.9);
+  });
+}
+
+function luaKey(name: string): string {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : `["${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`;
+}
+
+/** Build a Luau module mapping asset names to rbxassetid strings. */
+function buildLuaIdTable(entries: { name: string; assetId: string }[]): string {
+  const lines = entries.map((e) => `\t${luaKey(e.name)} = "rbxassetid://${e.assetId}",`);
+  return `-- Generated by Pixel Forge\nreturn {\n${lines.join('\n')}\n}\n`;
+}
+
+function triggerDownload(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoking right away cancels the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -381,6 +554,8 @@ function canvasExport(
   quality: number,
   brightness: number = 100,
   stretch: boolean = false,
+  padding: number = 0,
+  fill: string | null = null,
 ): Promise<Blob> {
   return new Promise((res, rej) => {
     const img = new Image();
@@ -404,21 +579,24 @@ function canvasExport(
       let dy: number;
       let dw: number;
       let dh: number;
+      const inset = Math.round(Math.min(w, h) * clamp(padding, 0, 45) / 100);
+      const boxW = Math.max(1, w - inset * 2);
+      const boxH = Math.max(1, h - inset * 2);
       if (stretch) {
-        dx = 0;
-        dy = 0;
-        dw = w;
-        dh = h;
+        dx = inset;
+        dy = inset;
+        dw = boxW;
+        dh = boxH;
       } else {
-        const scale = Math.min(w / srcW, h / srcH);
+        const scale = Math.min(boxW / srcW, boxH / srcH);
         dw = srcW * scale;
         dh = srcH * scale;
         dx = (w - dw) / 2;
         dy = (h - dh) / 2;
       }
       // JPEG has no alpha; give it a predictable background.
-      if (fmt === 'jpeg') {
-        ctx.fillStyle = '#ffffff';
+      if (fill || fmt === 'jpeg') {
+        ctx.fillStyle = fill ?? '#ffffff';
         ctx.fillRect(0, 0, w, h);
       } else {
         ctx.clearRect(0, 0, w, h);
@@ -824,6 +1002,27 @@ async function deleteDraftBlobsFromIdb(draftId: string): Promise<void> {
   } catch { /* best-effort */ }
 }
 
+// ── Inspector section ───────────────────────────────────────────────────────
+
+function Section({ title, aside, open, onToggle, children }: {
+  title: string;
+  aside?: React.ReactNode;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className={`${styles.section}${open ? ` ${styles.sectionOpen}` : ''}`}>
+      <button type="button" className={styles.sectionHead} onClick={onToggle} aria-expanded={open}>
+        <span className={styles.sectionChevron} aria-hidden="true" />
+        <span className={styles.sectionTitle}>{title}</span>
+        {aside && <span className={styles.sectionAside}>{aside}</span>}
+      </button>
+      {open && <div className={styles.sectionBody}>{children}</div>}
+    </section>
+  );
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ImageTool() {
@@ -887,13 +1086,35 @@ export default function ImageTool() {
   const [changelogOpen, setChangelogOpen] = useState(false);
 
   // Accent theme
-  const [accentThemeId, setAccentThemeId] = useState<string>(ACCENT_THEMES[0].id);
+  const [accentThemeId, setAccentThemeId] = useState<string>('yellow');
   const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [colorMode, setColorMode] = useState<ColorMode>('system');
 
   // Mobile drawers (toggled via FABs; controlled by CSS @media rules to no-op on desktop)
   const [mobileQueueOpen, setMobileQueueOpen] = useState(false);
   const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
+
+  // AI naming settings
+  const [namingOptions, setNamingOptions] = useState<NamingOptions>(DEFAULT_NAMING_OPTIONS);
+  const [openRouterKey, setOpenRouterKey] = useState('');
+  const [namingServer, setNamingServer] = useState<{ configured: boolean; defaultModel: string } | null>(null);
+  const [namingDialogOpen, setNamingDialogOpen] = useState(false);
+  const namingRef = useRef(namingOptions);
+  const openRouterKeyRef = useRef(openRouterKey);
+  useEffect(() => { namingRef.current = namingOptions; }, [namingOptions]);
+  useEffect(() => { openRouterKeyRef.current = openRouterKey; }, [openRouterKey]);
+
+  // Workbench UI
+  const [previewBg, setPreviewBg] = useState<PreviewBg>('mat');
+  const [comparing, setComparing] = useState(false);
+  const [queueFilter, setQueueFilter] = useState<QueueFilter>('all');
+  const [openSections, setOpenSections] = useState<Record<InspectorSection, boolean>>({
+    name: true, size: true, look: false, cutout: true, publish: true, export: true,
+  });
+  const [skipPublished, setSkipPublished] = useState(true);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [librarySearch, setLibrarySearch] = useState('');
+  const [zipBusy, setZipBusy] = useState(false);
 
   // Manual name editing — only one item is editable at a time, keyed by id.
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
@@ -975,7 +1196,7 @@ export default function ImageTool() {
       ) {
         return;
       }
-      if (!touchUpOpenRef.current || !e.ctrlKey || e.altKey || e.key.toLowerCase() !== 'z') return;
+      if (!touchUpOpenRef.current || !(e.ctrlKey || e.metaKey) || e.altKey || e.key.toLowerCase() !== 'z') return;
       const canvas = touchCanvasRef.current;
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
@@ -1163,12 +1384,70 @@ export default function ImageTool() {
       }
     } catch { /* ignore */ }
 
+    try {
+      const rawNaming = window.localStorage.getItem(NAMING_STORAGE_KEY);
+      if (rawNaming) {
+        const parsed = JSON.parse(rawNaming) as Partial<NamingOptions>;
+        setNamingOptions({
+          ...DEFAULT_NAMING_OPTIONS,
+          ...parsed,
+          style: parsed.style && parsed.style in NAME_STYLE_LABELS ? parsed.style : DEFAULT_NAMING_OPTIONS.style,
+          maxWords: clamp(Number(parsed.maxWords) || 2, 1, 4),
+        });
+      }
+      const storedKey = window.localStorage.getItem(OPENROUTER_KEY_STORAGE_KEY);
+      if (storedKey) setOpenRouterKey(storedKey);
+    } catch { /* ignore */ }
+
+    try {
+      const rawUi = window.localStorage.getItem(UI_PREFS_STORAGE_KEY);
+      if (rawUi) {
+        const parsed = JSON.parse(rawUi) as Partial<{
+          previewBg: PreviewBg;
+          openSections: Record<InspectorSection, boolean>;
+          skipPublished: boolean;
+        }>;
+        if (parsed.previewBg && PREVIEW_BGS.some((b) => b.id === parsed.previewBg)) setPreviewBg(parsed.previewBg);
+        if (parsed.openSections) setOpenSections((prev) => ({ ...prev, ...parsed.openSections }));
+        if (typeof parsed.skipPublished === 'boolean') setSkipPublished(parsed.skipPublished);
+      }
+    } catch { /* ignore */ }
+
     setStorageHydrated(true);
   }, []);
 
+  // Ask the server whether naming has a key configured.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/auto-name')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { configured?: boolean; defaultModel?: string } | null) => {
+        if (cancelled || !data) return;
+        setNamingServer({ configured: Boolean(data.configured), defaultModel: data.defaultModel ?? DEFAULT_VISION_MODEL });
+      })
+      .catch(() => { /* offline or route missing — leave unknown */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!storageHydrated) return;
+    try {
+      window.localStorage.setItem(NAMING_STORAGE_KEY, JSON.stringify(namingOptions));
+      if (openRouterKey.trim()) window.localStorage.setItem(OPENROUTER_KEY_STORAGE_KEY, openRouterKey.trim());
+      else window.localStorage.removeItem(OPENROUTER_KEY_STORAGE_KEY);
+    } catch { /* ignore */ }
+  }, [namingOptions, openRouterKey, storageHydrated]);
+
+  useEffect(() => {
+    if (!storageHydrated) return;
+    try {
+      window.localStorage.setItem(UI_PREFS_STORAGE_KEY, JSON.stringify({ previewBg, openSections, skipPublished }));
+    } catch { /* ignore */ }
+  }, [previewBg, openSections, skipPublished, storageHydrated]);
+
   // Apply accent theme whenever it changes
   useEffect(() => {
-    const theme = ACCENT_THEMES.find((t) => t.id === accentThemeId) ?? ACCENT_THEMES[0];
+    const theme = ACCENT_THEMES.find((t) => t.id === accentThemeId) ?? DEFAULT_ACCENT;
     applyAccentTheme(theme);
     if (!storageHydrated) return;
     try {
@@ -1272,8 +1551,8 @@ export default function ImageTool() {
     }
     let cancelled = false;
     const src = activeBlob(selectedItem);
-    const { tw: sTw, th: sTh, brightness: sBr, locked: sLocked } = selectedItem.exportSettings;
-    canvasExport(src, sTw, sTh, 'png', 100, sBr, !sLocked).then((blob) => {
+    const { tw: sTw, th: sTh, brightness: sBr, locked: sLocked, padding: sPad, fill: sFill } = selectedItem.exportSettings;
+    canvasExport(src, sTw, sTh, 'png', 100, sBr, !sLocked, sPad ?? 0, sFill ?? null).then((blob) => {
       if (cancelled) return;
       setExportPreviewUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
@@ -1300,7 +1579,32 @@ export default function ImageTool() {
     setItems((prev) => prev.map((i) => (i.id === id ? { ...i, ...patch } : i)));
   }
 
-  const autoNameOne = useCallback(async (id: string, source: Blob, originalName: string) => {
+  // Turn AI words into a filename using the current naming style, keeping the
+  // original extension and making sure no two queue items share a name.
+  const applyWordsToItem = useCallback((id: string, words: string[], alts?: string[][]) => {
+    setItems((prev) => {
+      const target = prev.find((i) => i.id === id);
+      if (!target) return prev;
+      const base = buildName(words, namingRef.current) || splitNameAndExt(target.originalFileName).base;
+      const ext = splitNameAndExt(target.originalFileName).ext || '.png';
+      const existing = prev.filter((i) => i.id !== id).map((i) => i.fileName);
+      const unique = ensureUniqueFileName(`${base}${ext}`, existing);
+      return prev.map((i) =>
+        i.id === id
+          ? {
+              ...i,
+              fileName: unique,
+              nameStatus: 'done' as NameStatus,
+              nameWords: words,
+              nameAlts: alts ?? i.nameAlts,
+              nameError: undefined,
+            }
+          : i,
+      );
+    });
+  }, []);
+
+  const autoNameOne = useCallback(async (id: string, source: Blob) => {
     // Don't clobber a name the user has typed themselves. If they renamed
     // before the API call even starts, bail out completely.
     let skipped = false;
@@ -1308,48 +1612,68 @@ export default function ImageTool() {
       prev.map((i) => {
         if (i.id !== id) return i;
         if (i.nameStatus === 'manual') { skipped = true; return i; }
-        return { ...i, nameStatus: 'loading' as NameStatus };
+        return { ...i, nameStatus: 'loading' as NameStatus, nameError: undefined };
       }),
     );
     if (skipped) return;
 
-    const applyFailure = () => {
+    const applyFailure = (message: string) => {
       setItems((prev) =>
         prev.map((i) => {
           if (i.id !== id) return i;
           if (i.nameStatus === 'manual') return i;
-          return { ...i, fileName: i.originalFileName, nameStatus: 'error' as NameStatus };
+          return { ...i, nameStatus: 'error' as NameStatus, nameError: message };
         }),
       );
     };
 
     try {
-      const fd = new FormData();
-      fd.append('image', source, 'source.png');
-      const res = await fetch('/api/auto-name', { method: 'POST', body: fd });
-      if (!res.ok) { applyFailure(); return; }
-      const data = (await res.json()) as { name?: string };
-      const name = (data.name ?? '').trim();
-      if (!name) { applyFailure(); return; }
-
-      setItems((prev) => {
-        const target = prev.find((i) => i.id === id);
-        if (!target) return prev;
-        // User manually renamed while we were waiting — keep their name.
-        if (target.nameStatus === 'manual') return prev;
-
-        const ext = splitNameAndExt(originalName).ext;
-        const candidate = `${name}${ext}`;
-        const existing = prev.filter((i) => i.id !== id).map((i) => i.fileName);
-        const unique = ensureUniqueFileName(candidate, existing);
-        return prev.map((i) =>
-          i.id === id ? { ...i, fileName: unique, nameStatus: 'done' as NameStatus } : i,
-        );
+      const data = await withNameSlot(async () => {
+        const opts = namingRef.current;
+        const small = await downscaleForNaming(source).catch(() => source);
+        const fd = new FormData();
+        fd.append('image', small, 'source.jpg');
+        fd.append('maxWords', String(opts.maxWords));
+        if (opts.context.trim()) fd.append('context', opts.context.trim());
+        if (opts.model.trim()) fd.append('model', opts.model.trim());
+        if (openRouterKeyRef.current.trim()) fd.append('apiKey', openRouterKeyRef.current.trim());
+        const res = await fetch('/api/auto-name', { method: 'POST', body: fd });
+        const json = (await res.json().catch(() => ({}))) as {
+          words?: string[];
+          alternatives?: string[][];
+          error?: string;
+        };
+        if (!res.ok) throw new Error(json.error ?? `Naming failed (HTTP ${res.status})`);
+        return json;
       });
-    } catch {
-      applyFailure();
+
+      const words = (data.words ?? []).filter(Boolean);
+      if (words.length === 0) { applyFailure('No name returned'); return; }
+
+      // User manually renamed while we were waiting — keep their name.
+      const current = itemsRef.current.find((i) => i.id === id);
+      if (!current || current.nameStatus === 'manual') return;
+      applyWordsToItem(id, words, data.alternatives ?? []);
+    } catch (err: unknown) {
+      applyFailure(err instanceof Error ? err.message : 'Naming failed');
     }
-  }, []);
+  }, [applyWordsToItem]);
+
+  // Swap the current name with one of the AI's alternative suggestions.
+  const pickAlternativeName = useCallback((id: string, words: string[]) => {
+    const item = itemsRef.current.find((i) => i.id === id);
+    if (!item) return;
+    const others = (item.nameAlts ?? []).filter((a) => a.join(' ') !== words.join(' '));
+    if (item.nameWords && item.nameWords.length > 0) others.unshift(item.nameWords);
+    applyWordsToItem(id, words, others.slice(0, 3));
+  }, [applyWordsToItem]);
+
+  // Re-style every AI-named image after the naming style changes.
+  const restyleAllNames = useCallback(() => {
+    const targets = itemsRef.current.filter((i) => i.nameStatus === 'done' && i.nameWords && i.nameWords.length > 0);
+    for (const item of targets) applyWordsToItem(item.id, item.nameWords as string[]);
+    return targets.length;
+  }, [applyWordsToItem]);
 
   // Apply a user-typed name. Preserves the existing extension and de-dupes
   // against other items so two images can't share a name.
@@ -1414,8 +1738,15 @@ export default function ImageTool() {
         i.id === id ? { ...i, nameStatus: 'idle' as NameStatus } : i,
       ),
     );
-    void autoNameOne(id, item.originalBlob, item.originalFileName);
+    void autoNameOne(id, activeBlob(item));
   }, [autoNameOne]);
+
+  const autoNameAll = useCallback(() => {
+    const targets = itemsRef.current.filter((i) => i.nameStatus !== 'manual' && i.nameStatus !== 'loading');
+    if (targets.length === 0) { showToast('Nothing to name — renamed images are left alone', 'info'); return; }
+    for (const item of targets) void autoNameOne(item.id, activeBlob(item));
+    showToast(`Naming ${targets.length} image${targets.length === 1 ? '' : 's'}…`, 'info');
+  }, [autoNameOne, showToast]);
 
   // ── Add images ────────────────────────────────────────────────────────────────
 
@@ -1423,6 +1754,7 @@ export default function ImageTool() {
     const arr = Array.from(files).filter((f) => f.type.startsWith('image/'));
     if (arr.length === 0) return;
 
+    const autoName = namingRef.current.autoOnImport;
     const newItems: ImageItem[] = await Promise.all(
       arr.map(async (f) => {
         const id = uid();
@@ -1436,7 +1768,7 @@ export default function ImageTool() {
           previewUrl,
           fileName: f.name,
           originalFileName: f.name,
-          nameStatus: 'loading' as NameStatus,
+          nameStatus: (autoName ? 'loading' : 'idle') as NameStatus,
           dims,
           bgStatus: 'idle' as BgStatus,
           pubStatus: 'idle' as PubStatus,
@@ -1448,16 +1780,21 @@ export default function ImageTool() {
     );
 
     setItems((prev) => {
-      const updated = [...prev, ...newItems];
-      return updated;
+      const names = prev.map((i) => i.fileName);
+      const unique = newItems.map((item) => {
+        const fileName = ensureUniqueFileName(item.fileName, names);
+        names.push(fileName);
+        return { ...item, fileName, originalFileName: fileName };
+      });
+      return [...prev, ...unique];
     });
 
     // Auto-select the first newly added item if nothing selected
     setSelectedId((prev) => prev ?? newItems[0].id);
 
     // Best-effort AI naming in background.
-    for (const item of newItems) {
-      void autoNameOne(item.id, item.originalBlob, item.fileName);
+    if (autoName) {
+      for (const item of newItems) void autoNameOne(item.id, item.originalBlob);
     }
   }, [autoNameOne]);
 
@@ -1473,12 +1810,21 @@ export default function ImageTool() {
     setSelectedId((prev) => {
       if (prev !== id) return prev;
       // Select a neighbour
-      const idx = items.findIndex((i) => i.id === id);
-      const remaining = items.filter((i) => i.id !== id);
+      const current = itemsRef.current;
+      const idx = current.findIndex((i) => i.id === id);
+      const remaining = current.filter((i) => i.id !== id);
       if (remaining.length === 0) return null;
       return remaining[Math.max(0, idx - 1)].id;
     });
-  }, [items]);
+  }, []);
+
+  const clearQueue = useCallback(() => {
+    if (itemsRef.current.length === 0) return;
+    if (!window.confirm(`Remove all ${itemsRef.current.length} images from the queue?`)) return;
+    for (const item of itemsRef.current) URL.revokeObjectURL(item.previewUrl);
+    setItems([]);
+    setSelectedId(null);
+  }, []);
 
   // ── File input ────────────────────────────────────────────────────────────────
 
@@ -2012,39 +2358,62 @@ export default function ImageTool() {
 
   const getExportBlob = useCallback(async (item: ImageItem): Promise<Blob> => {
     const s = item.exportSettings;
-    return canvasExport(activeBlob(item), s.tw, s.th, s.format, s.quality, s.brightness, !s.locked);
+    return canvasExport(activeBlob(item), s.tw, s.th, s.format, s.quality, s.brightness, !s.locked, s.padding ?? 0, s.fill ?? null);
   }, []);
 
   // ── Download ──────────────────────────────────────────────────────────────────
+
+  const exportFileName = (item: ImageItem) => {
+    const s = item.exportSettings;
+    const base = item.fileName.replace(/\.[^.]+$/, '') || 'image';
+    return `${base}_${s.tw}x${s.th}.${s.format === 'jpeg' ? 'jpg' : s.format}`;
+  };
 
   const downloadOne = useCallback(async (id: string) => {
     const item = itemsRef.current.find((i) => i.id === id);
     if (!item) return;
     try {
       const blob = await getExportBlob(item);
-      const s = item.exportSettings;
-      const base = item.fileName.replace(/\.[^.]+$/, '') || 'image';
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${base}_${s.tw}x${s.th}.${s.format}`;
-      a.click();
-      URL.revokeObjectURL(url);
+      triggerDownload(blob, exportFileName(item));
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Download failed', 'err');
     }
   }, [getExportBlob, showToast]);
 
-  const downloadAll = useCallback(async () => {
-    if (items.length === 0) return;
-    for (let i = 0; i < items.length; i++) {
-      await downloadOne(items[i].id);
-      if (i < items.length - 1) {
-        await new Promise<void>((r) => setTimeout(r, 80));
+  // Everything in the queue as one ZIP, plus a Luau ID module if anything is published.
+  const downloadAllZip = useCallback(async () => {
+    const current = itemsRef.current;
+    if (current.length === 0) return;
+    setZipBusy(true);
+    try {
+      const entries: ZipEntry[] = [];
+      const used: string[] = [];
+      for (const item of current) {
+        const blob = await getExportBlob(item);
+        const name = ensureUniqueFileName(exportFileName(item), used);
+        used.push(name);
+        entries.push({ name, data: blob });
       }
+      const published = current.filter((i) => i.pubAssetId);
+      if (published.length > 0) {
+        entries.push({
+          name: 'asset_ids.lua',
+          data: buildLuaIdTable(published.map((i) => ({
+            name: i.fileName.replace(/\.[^.]+$/, ''),
+            assetId: i.pubAssetId as string,
+          }))),
+        });
+      }
+      const zip = await createZip(entries);
+      const stamp = new Date().toISOString().slice(0, 10);
+      triggerDownload(zip, `pixel-forge_${stamp}.zip`);
+      showToast(`Downloaded ${current.length} image${current.length > 1 ? 's' : ''} as ZIP`, 'ok');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'ZIP export failed', 'err');
+    } finally {
+      setZipBusy(false);
     }
-    showToast(`Downloaded ${items.length} image${items.length > 1 ? 's' : ''}`, 'ok');
-  }, [items, downloadOne, showToast]);
+  }, [getExportBlob, showToast]);
 
   // ── Per-item export setting helpers ─────────────────────────────────────────
 
@@ -2054,17 +2423,22 @@ export default function ImageTool() {
       i.id === selectedId ? { ...i, exportSettings: { ...i.exportSettings, ...patch } } : i,
     ));
   };
+  // When locked, keep the current aspect ratio instead of forcing a square.
   const changeW = (v: number) => {
     if (!selectedId) return;
     const item = itemsRef.current.find((i) => i.id === selectedId);
     if (!item) return;
-    setExport(item.exportSettings.locked ? { tw: v, th: v } : { tw: v });
+    const w = clamp(Math.round(v) || 1, 1, 4096);
+    const { tw: cw, th: ch, locked: lk } = item.exportSettings;
+    setExport(lk ? { tw: w, th: clamp(Math.round(w * (ch / Math.max(cw, 1))), 1, 4096) } : { tw: w });
   };
   const changeH = (v: number) => {
     if (!selectedId) return;
     const item = itemsRef.current.find((i) => i.id === selectedId);
     if (!item) return;
-    setExport(item.exportSettings.locked ? { tw: v, th: v } : { th: v });
+    const h = clamp(Math.round(v) || 1, 1, 4096);
+    const { tw: cw, th: ch, locked: lk } = item.exportSettings;
+    setExport(lk ? { th: h, tw: clamp(Math.round(h * (cw / Math.max(ch, 1))), 1, 4096) } : { th: h });
   };
 
   const applyDimensionsToAll = useCallback(() => {
@@ -2079,6 +2453,26 @@ export default function ImageTool() {
     })));
     showToast(`Applied ${tw}×${th} to ${count} image${count === 1 ? '' : 's'}`, 'ok');
   }, [selectedId, showToast]);
+
+  // Copy every export setting (size, format, look) from the selected image to the rest.
+  const applyAllSettingsToAll = useCallback(() => {
+    if (!selectedId) return;
+    const source = itemsRef.current.find((i) => i.id === selectedId);
+    if (!source) return;
+    const count = itemsRef.current.length;
+    setItems((prev) => prev.map((i) => ({ ...i, exportSettings: { ...source.exportSettings } })));
+    showToast(`Copied settings to ${count} image${count === 1 ? '' : 's'}`, 'ok');
+  }, [selectedId, showToast]);
+
+  const applyPresetSize = (preset: SizePreset) => {
+    setExport({ tw: preset.w, th: preset.h, locked: preset.w === preset.h });
+  };
+
+  const resetToOriginalSize = () => {
+    const item = itemsRef.current.find((i) => i.id === selectedId);
+    if (!item?.dims) return;
+    setExport({ tw: item.dims.w, th: item.dims.h, locked: item.dims.w === item.dims.h });
+  };
 
   // ── Image Library ─────────────────────────────────────────────────────────────
 
@@ -2112,9 +2506,9 @@ export default function ImageTool() {
     });
   }, []);
 
-  const copyLibraryId = useCallback((assetId: string) => {
-    navigator.clipboard.writeText(assetId);
-    showToast('Copied!', 'ok');
+  const copyLibraryId = useCallback(async (assetId: string) => {
+    const ok = await copyText(assetId);
+    showToast(ok ? `Copied ${assetId}` : 'Clipboard blocked by the browser', ok ? 'ok' : 'err');
   }, [showToast]);
 
   // ── Import from Roblox ─────────────────────────────────────────────────────────
@@ -2180,7 +2574,8 @@ export default function ImageTool() {
       setImportAssetInput('');
       showToast(`Imported asset ${assetId}`, 'ok');
 
-      void autoNameOne(newItem.id, newItem.originalBlob, newItem.fileName);
+      if (namingRef.current.autoOnImport) void autoNameOne(newItem.id, newItem.originalBlob);
+      else updateItem(newItem.id, { nameStatus: 'idle' });
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Import failed', 'err');
     } finally {
@@ -2235,12 +2630,7 @@ export default function ImageTool() {
   const downloadLibraryEntry = useCallback(async (entry: CachedImage) => {
     try {
       const blob = await resolveLibraryBlob(entry);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${entry.name}_${entry.assetId}.png`;
-      a.click();
-      URL.revokeObjectURL(url);
+      triggerDownload(blob, `${entry.name}_${entry.assetId}.png`);
       showToast('Download started', 'ok');
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Download failed', 'err');
@@ -2259,7 +2649,10 @@ export default function ImageTool() {
         name: item.fileName.replace(/\.[^.]+$/, '') || 'image',
         previewDataUrl,
         savedAt: Date.now(),
-        exportSettings: { tw: s.tw, th: s.th, format: s.format, quality: s.quality, brightness: s.brightness },
+        exportSettings: {
+          tw: s.tw, th: s.th, format: s.format, quality: s.quality, brightness: s.brightness,
+          padding: s.padding, fill: s.fill, locked: s.locked,
+        },
         hasBgRemoved: item.processedBlob != null,
       };
       setDrafts((prev) => [draft, ...prev]);
@@ -2302,7 +2695,13 @@ export default function ImageTool() {
         dims,
         bgStatus: blobs.processed ? 'done' as BgStatus : 'idle' as BgStatus,
         pubStatus: 'idle' as PubStatus,
-        exportSettings: { ...DEFAULT_EXPORT_SETTINGS, ...draft.exportSettings, locked: DEFAULT_EXPORT_SETTINGS.locked },
+        exportSettings: {
+          ...DEFAULT_EXPORT_SETTINGS,
+          ...draft.exportSettings,
+          padding: draft.exportSettings.padding ?? 0,
+          fill: draft.exportSettings.fill ?? null,
+          locked: draft.exportSettings.locked ?? draft.exportSettings.tw === draft.exportSettings.th,
+        },
       };
 
       setItems((prev) => [...prev, newItem]);
@@ -2316,37 +2715,54 @@ export default function ImageTool() {
 
   // ── Publish ───────────────────────────────────────────────────────────────────
 
+  // Upload one item and resolve to its asset ID. Follows up on uploads Roblox
+  // is still processing instead of reporting them as failures.
+  const uploadItem = useCallback(async (item: ImageItem): Promise<{ assetId: string; blob: Blob }> => {
+    const blob = await getExportBlob(item);
+    const assetName = item.fileName.replace(/\.[^.]+$/, '') || 'Uploaded Icon';
+    const fd = new FormData();
+    fd.append('apiKey', apiKey.trim());
+    fd.append('creatorType', creatorType);
+    fd.append('creatorId', creatorId.trim());
+    fd.append('assetName', assetName);
+    fd.append('image', blob, `icon.${item.exportSettings.format}`);
+
+    const res = await fetch('/api/roblox-upload', { method: 'POST', body: fd });
+    const data = (await res.json().catch(() => ({ error: `Upload failed (HTTP ${res.status})` }))) as {
+      assetId?: string | number; error?: string; success?: boolean; pending?: boolean; operationPath?: string;
+    };
+    if (data.success && data.assetId) return { assetId: String(data.assetId), blob };
+
+    if (data.pending && data.operationPath) {
+      updateItem(item.id, { pubOperationPath: data.operationPath });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const follow = await fetch('/api/roblox-operation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey: apiKey.trim(), operationPath: data.operationPath }),
+        });
+        const fdata = (await follow.json().catch(() => ({}))) as { assetId?: string | number; success?: boolean };
+        if (fdata.success && fdata.assetId) return { assetId: String(fdata.assetId), blob };
+      }
+      throw new Error('Still processing on Roblox — check Creator Hub in a minute');
+    }
+    throw new Error(data.error ?? 'Unknown error');
+  }, [apiKey, creatorId, creatorType, getExportBlob]);
+
   const publishOne = useCallback(async (id: string) => {
     const item = itemsRef.current.find((i) => i.id === id);
     if (!item) return;
-    if (!apiKey.trim()) { showToast('Enter your Roblox API key', 'err'); return; }
-    if (!creatorId.trim()) { showToast('Enter a creator ID', 'err'); return; }
+    if (!apiKey.trim()) { showToast('Add your Roblox API key in publish settings', 'err'); setPublishDialogOpen(true); return; }
+    if (!creatorId.trim()) { showToast('Add a creator ID in publish settings', 'err'); setPublishDialogOpen(true); return; }
 
     setPublishing(true);
     updateItem(id, { pubStatus: 'publishing', pubAssetId: undefined, pubError: undefined });
 
     try {
-      const blob = await getExportBlob(item);
-      const assetName = item.fileName.replace(/\.[^.]+$/, '') || 'Uploaded Icon';
-      const fd = new FormData();
-      fd.append('apiKey', apiKey.trim());
-      fd.append('creatorType', creatorType);
-      fd.append('creatorId', creatorId.trim());
-      fd.append('assetName', assetName);
-      fd.append('image', blob, `icon.${item.exportSettings.format}`);
-
-      const res = await fetch('/api/roblox-upload', { method: 'POST', body: fd });
-      const data: { assetId?: string | number; error?: string; success?: boolean } = await res.json();
-
-      if (data.success && data.assetId) {
-        const assetId = String(data.assetId);
-        updateItem(id, { pubStatus: 'done', pubAssetId: assetId });
-        void addToLibrary(item, assetId, blob);
-        showToast('Published!', 'ok');
-      } else {
-        updateItem(id, { pubStatus: 'error', pubError: data.error ?? 'Unknown error' });
-        showToast(data.error ?? 'Publish failed', 'err');
-      }
+      const { assetId, blob } = await uploadItem(item);
+      updateItem(id, { pubStatus: 'done', pubAssetId: assetId, pubOperationPath: undefined });
+      void addToLibrary(item, assetId, blob);
+      showToast(`Published ${assetId}`, 'ok');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Publish failed';
       updateItem(id, { pubStatus: 'error', pubError: msg });
@@ -2354,94 +2770,91 @@ export default function ImageTool() {
     } finally {
       setPublishing(false);
     }
-  }, [apiKey, creatorId, creatorType, getExportBlob, showToast, addToLibrary]);
+  }, [apiKey, creatorId, uploadItem, showToast, addToLibrary]);
 
   const publishAll = useCallback(async () => {
-    if (items.length === 0) return;
-    if (!apiKey.trim()) { showToast('Enter your Roblox API key', 'err'); return; }
-    if (!creatorId.trim()) { showToast('Enter a creator ID', 'err'); return; }
+    if (itemsRef.current.length === 0) return;
+    if (!apiKey.trim()) { showToast('Add your Roblox API key in publish settings', 'err'); setPublishDialogOpen(true); return; }
+    if (!creatorId.trim()) { showToast('Add a creator ID in publish settings', 'err'); setPublishDialogOpen(true); return; }
+
+    const targets = itemsRef.current.filter((i) => !(skipPublished && i.pubStatus === 'done' && i.pubAssetId));
+    if (targets.length === 0) { showToast('Everything is already published', 'info'); return; }
+    const targetIds = new Set(targets.map((t) => t.id));
 
     setPublishing(true);
     let successCount = 0;
     let errorCount = 0;
 
-    // Mark all as queued first
-    setItems((prev) => prev.map((i) => ({ ...i, pubStatus: 'queued' as PubStatus, pubAssetId: undefined, pubError: undefined })));
+    // Mark targets as queued first
+    setItems((prev) => prev.map((i) => (
+      targetIds.has(i.id) ? { ...i, pubStatus: 'queued' as PubStatus, pubAssetId: undefined, pubError: undefined } : i
+    )));
 
-    for (const item of itemsRef.current) {
-      // Mark as publishing
-      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, pubStatus: 'publishing' as PubStatus } : i)));
-
+    for (const target of targets) {
+      // Use the latest version of the item (it may have been renamed while queued).
+      const item = itemsRef.current.find((i) => i.id === target.id);
+      if (!item) continue;
+      updateItem(item.id, { pubStatus: 'publishing' });
       try {
-        const blob = await getExportBlob(item);
-        const assetName = item.fileName.replace(/\.[^.]+$/, '') || 'Uploaded Icon';
-        const fd = new FormData();
-        fd.append('apiKey', apiKey.trim());
-        fd.append('creatorType', creatorType);
-        fd.append('creatorId', creatorId.trim());
-        fd.append('assetName', assetName);
-        fd.append('image', blob, `icon.${item.exportSettings.format}`);
-
-        const res = await fetch('/api/roblox-upload', { method: 'POST', body: fd });
-        const data: { assetId?: string | number; error?: string; success?: boolean } = await res.json();
-
-        if (data.success && data.assetId) {
-          const id = String(data.assetId);
-          successCount += 1;
-          setItems((prev) =>
-            prev.map((i) =>
-              i.id === item.id ? { ...i, pubStatus: 'done' as PubStatus, pubAssetId: id } : i,
-            ),
-          );
-          void addToLibrary(item, id, blob);
-        } else {
-          errorCount += 1;
-          setItems((prev) =>
-            prev.map((i) =>
-              i.id === item.id
-                ? { ...i, pubStatus: 'error' as PubStatus, pubError: data.error ?? 'Unknown error' }
-                : i,
-            ),
-          );
-        }
+        const { assetId, blob } = await uploadItem(item);
+        successCount += 1;
+        updateItem(item.id, { pubStatus: 'done', pubAssetId: assetId, pubOperationPath: undefined });
+        void addToLibrary(item, assetId, blob);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : 'Publish failed';
         errorCount += 1;
-        setItems((prev) =>
-          prev.map((i) =>
-            i.id === item.id ? { ...i, pubStatus: 'error' as PubStatus, pubError: msg } : i,
-          ),
-        );
+        updateItem(item.id, { pubStatus: 'error', pubError: err instanceof Error ? err.message : 'Publish failed' });
       }
     }
 
     setPublishing(false);
-    if (successCount > 0 && errorCount === 0) {
-      showToast(`Publish complete: ${successCount}/${items.length} succeeded`, 'ok');
-      return;
+    if (errorCount === 0) {
+      showToast(`Published ${successCount} image${successCount === 1 ? '' : 's'}`, 'ok');
+    } else if (successCount > 0) {
+      showToast(`Published ${successCount}, ${errorCount} failed — check the red items`, 'info');
+    } else {
+      showToast(`Publish failed for ${errorCount} image${errorCount === 1 ? '' : 's'}`, 'err');
     }
-    if (successCount > 0 && errorCount > 0) {
-      showToast(`Publish finished: ${successCount} succeeded, ${errorCount} failed`, 'info');
-      return;
-    }
-    showToast(`Publish failed: ${errorCount}/${items.length} failed`, 'err');
-  }, [items, apiKey, creatorType, creatorId, getExportBlob, showToast, addToLibrary]);
+  }, [apiKey, creatorId, skipPublished, uploadItem, showToast, addToLibrary]);
 
-  const copyAssetId = useCallback((id: string) => {
-    const item = items.find((i) => i.id === id);
-    if (item?.pubAssetId) {
-      navigator.clipboard.writeText(item.pubAssetId);
-      showToast('Copied!', 'ok');
-    }
-  }, [items, showToast]);
+  const copyAssetId = useCallback(async (id: string) => {
+    const item = itemsRef.current.find((i) => i.id === id);
+    if (!item?.pubAssetId) return;
+    const ok = await copyText(item.pubAssetId);
+    showToast(ok ? `Copied ${item.pubAssetId}` : 'Clipboard blocked by the browser', ok ? 'ok' : 'err');
+  }, [showToast]);
 
-  const copyAllIds = useCallback(() => {
-    const ids = items.filter((i) => i.pubAssetId).map((i) => i.pubAssetId as string);
-    if (ids.length > 0) {
-      navigator.clipboard.writeText(ids.join('\n'));
-      showToast(`Copied ${ids.length} ID${ids.length > 1 ? 's' : ''}`, 'ok');
+  const formatIds = (entries: { name: string; assetId: string }[], fmt: IdFormat): string => {
+    // Keep keys unique even if two assets share a name.
+    const used: string[] = [];
+    const unique = entries.map((e) => {
+      const name = ensureUniqueFileName(e.name, used);
+      used.push(name);
+      return { ...e, name };
+    });
+    if (fmt === 'lua') return buildLuaIdTable(unique);
+    if (fmt === 'json') {
+      return JSON.stringify(Object.fromEntries(unique.map((e) => [e.name, `rbxassetid://${e.assetId}`])), null, 2);
     }
-  }, [items, showToast]);
+    return unique.map((e) => e.assetId).join('\n');
+  };
+
+  const copyAllIds = useCallback(async (fmt: IdFormat = 'list') => {
+    const published = itemsRef.current
+      .filter((i) => i.pubAssetId)
+      .map((i) => ({ name: i.fileName.replace(/\.[^.]+$/, ''), assetId: i.pubAssetId as string }));
+    if (published.length === 0) return;
+    const ok = await copyText(formatIds(published, fmt));
+    const label = fmt === 'lua' ? 'Luau table' : fmt === 'json' ? 'JSON' : 'list';
+    showToast(ok ? `Copied ${published.length} ID${published.length > 1 ? 's' : ''} as ${label}` : 'Clipboard blocked by the browser', ok ? 'ok' : 'err');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showToast]);
+
+  const copyLibraryIds = useCallback(async (entries: CachedImage[], fmt: IdFormat) => {
+    if (entries.length === 0) return;
+    const ok = await copyText(formatIds(entries.map((e) => ({ name: e.name, assetId: e.assetId })), fmt));
+    showToast(ok ? `Copied ${entries.length} ID${entries.length > 1 ? 's' : ''}` : 'Clipboard blocked by the browser', ok ? 'ok' : 'err');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showToast]);
 
   const applyPreset = useCallback((presetId: string) => {
     setSelectedPresetId(presetId);
@@ -2531,146 +2944,205 @@ export default function ImageTool() {
     if (target) showToast(`Deleted preset: ${target.name}`, 'ok');
   }, [presets, selectedPresetId, showToast]);
 
-  // ── Helpers ───────────────────────────────────────────────────────────────────
 
-  function pubStatusClass(s: PubStatus): string {
-    switch (s) {
-      case 'idle': return styles.pubStatusIdle;
-      case 'queued': return styles.pubStatusQueued;
-      case 'publishing': return styles.pubStatusPublishing;
-      case 'done': return styles.pubStatusDone;
-      case 'error': return styles.pubStatusError;
+  // ── Derived view state ──────────────────────────────────────────────────────
+
+  const publishedItems = items.filter((i) => i.pubAssetId);
+  const hasSomeAssetId = publishedItems.length > 0;
+  const selectedBg = selectedItem?.processedBlob != null;
+  const finishedCount = publishedItems.length;
+  const unpublishedCount = items.length - finishedCount;
+  const closePublishDialog = useCallback(() => setPublishDialogOpen(false), []);
+  const publishReady = Boolean(apiKey.trim() && creatorId.trim());
+  const namingReady = Boolean(openRouterKey.trim()) || namingServer?.configured !== false;
+
+  const visibleItems = useMemo(() => items.filter((i) => {
+    switch (queueFilter) {
+      case 'todo': return i.bgStatus !== 'done';
+      case 'unpublished': return i.pubStatus !== 'done';
+      case 'published': return i.pubStatus === 'done';
+      default: return true;
     }
+  }), [items, queueFilter]);
+
+  const filteredLibrary = useMemo(() => {
+    const q = librarySearch.trim().toLowerCase();
+    if (!q) return imageLibrary;
+    return imageLibrary.filter((e) => e.name.toLowerCase().includes(q) || e.assetId.includes(q));
+  }, [imageLibrary, librarySearch]);
+
+  // Object URL for the untouched original, used by hold-to-compare.
+  const [originalUrl, setOriginalUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!selectedItem) { setOriginalUrl(null); return; }
+    const url = URL.createObjectURL(selectedItem.originalBlob);
+    setOriginalUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [selectedItem?.id, selectedItem?.originalBlob]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggleSection = (id: InspectorSection) => setOpenSections((prev) => ({ ...prev, [id]: !prev[id] }));
+
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
+  // The handler lives in a ref so the listener always sees the latest state.
+
+  const shortcutHandlerRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  shortcutHandlerRef.current = (e: KeyboardEvent) => {
+    const target = e.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable)) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === '?') { e.preventDefault(); setShortcutsOpen((v) => !v); return; }
+    if (e.key === 'Escape') { setShortcutsOpen(false); setNamingDialogOpen(false); return; }
+    if (activeTab !== 'tool' || editingNameId) return;
+
+    const list = visibleItems.length > 0 ? visibleItems : items;
+    const idx = list.findIndex((i) => i.id === selectedId);
+    const key = e.key.toLowerCase();
+
+    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+      if (list.length === 0) return;
+      e.preventDefault();
+      setSelectedId(list[Math.min(list.length - 1, idx + 1)].id);
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+      if (list.length === 0) return;
+      e.preventDefault();
+      setSelectedId(list[Math.max(0, idx - 1)].id);
+    } else if (!selectedItem) {
+      return;
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (touchUpOpen) return;
+      e.preventDefault();
+      removeItem(selectedItem.id);
+    } else if (key === 'b' && !bgBusy && selectedItem.bgStatus !== 'processing') {
+      requestBgAction('one');
+    } else if (key === 'n' && selectedItem.nameStatus !== 'loading') {
+      retryAutoName(selectedItem.id);
+    } else if (key === 'r' || e.key === 'F2') {
+      e.preventDefault();
+      beginEditName(selectedItem.id);
+    } else if (key === 'd') {
+      void downloadOne(selectedItem.id);
+    } else if (key === 'c' && !touchUpOpen) {
+      setComparing(true);
+    }
+  };
+
+  useEffect(() => {
+    const onDown = (e: KeyboardEvent) => shortcutHandlerRef.current(e);
+    const onUp = (e: KeyboardEvent) => { if (e.key.toLowerCase() === 'c') setComparing(false); };
+    const onBlur = () => setComparing(false);
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
+
+  const cx = (...classes: (string | false | null | undefined)[]) => classes.filter(Boolean).join(' ');
+
+  function statusLine(item: ImageItem): { text: string; tone: 'ok' | 'err' | 'busy' | 'idle' } {
+    if (item.pubStatus === 'publishing') return { text: 'Publishing…', tone: 'busy' };
+    if (item.pubStatus === 'queued') return { text: 'Waiting to publish', tone: 'busy' };
+    if (item.pubStatus === 'error') return { text: 'Publish failed', tone: 'err' };
+    if (item.pubStatus === 'done' && item.pubAssetId) return { text: item.pubAssetId, tone: 'ok' };
+    if (item.bgStatus === 'processing') return { text: 'Cutting out…', tone: 'busy' };
+    if (item.bgStatus === 'error') return { text: 'Cut-out failed', tone: 'err' };
+    if (item.nameStatus === 'loading') return { text: 'Naming…', tone: 'busy' };
+    if (item.bgStatus === 'done') return { text: 'Cut out', tone: 'idle' };
+    return { text: `${item.dims?.w ?? '?'}×${item.dims?.h ?? '?'}`, tone: 'idle' };
   }
 
-  const hasSomeAssetId = items.some((i) => i.pubAssetId);
-  const selectedBg = selectedItem?.processedBlob != null;
-  const finishedCount = items.filter((i) => i.pubStatus === 'done').length;
-  const closePublishDialog = useCallback(() => setPublishDialogOpen(false), []);
+  const frameW = (previewDims?.w ?? 0) * viewBase.finalScale;
+  const frameH = (previewDims?.h ?? 0) * viewBase.finalScale;
+  const frameX = viewBase.offsetX + viewPanX;
+  const frameY = viewBase.offsetY + viewPanY;
+  const accent = ACCENT_THEMES.find((t) => t.id === accentThemeId) ?? DEFAULT_ACCENT;
 
-  // ── Render ────────────────────────────────────────────────────────────────────
+  // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
     <main className={styles.app}>
 
       {/* ── Header ── */}
       <header className={styles.header}>
-        <div className={styles.headerLeft}>
-          <span className={styles.logoMark}>PIXEL FORGE</span>
-          <span className={styles.logoDivider} />
-          <nav className={styles.headerTabs}>
-            <button
-              className={`${styles.headerTab}${activeTab === 'tool' ? ` ${styles.headerTabActive}` : ''}`}
-              onClick={() => setActiveTab('tool')}
-            >
-              Tool
-            </button>
-            <button
-              className={`${styles.headerTab}${activeTab === 'drafts' ? ` ${styles.headerTabActive}` : ''}`}
-              onClick={() => setActiveTab('drafts')}
-            >
-              Drafts
-              {drafts.length > 0 && (
-                <span className={styles.headerTabBadge}>{drafts.length}</span>
-              )}
-            </button>
-            <button
-              className={`${styles.headerTab}${activeTab === 'library' ? ` ${styles.headerTabActive}` : ''}`}
-              onClick={() => setActiveTab('library')}
-            >
-              Library
-              {imageLibrary.length > 0 && (
-                <span className={styles.headerTabBadge}>{imageLibrary.length}</span>
-              )}
-            </button>
-          </nav>
+        <div className={styles.brand}>
+          <span className={styles.brandMark} aria-hidden="true" />
+          <span className={styles.brandName}>Pixel Forge</span>
         </div>
-        <div className={styles.headerRight}>
-          {activeTab === 'tool' && hasItems && (
-            <span className={styles.headerMeta}>
-              {items.length} image{items.length > 1 ? 's' : ''}
-            </span>
-          )}
-          {activeTab === 'tool' && selectedItem && (
-            <span className={styles.headerMeta}>
-              {fmtBytes(activeBlob(selectedItem).size)}
-            </span>
-          )}
-          {activeTab === 'drafts' && drafts.length > 0 && (
+        <nav className={styles.tabs} aria-label="Sections">
+          {([
+            { id: 'tool', label: 'Workbench', count: items.length },
+            { id: 'drafts', label: 'Drafts', count: drafts.length },
+            { id: 'library', label: 'Library', count: imageLibrary.length },
+          ] as { id: ActiveTab; label: string; count: number }[]).map((t) => (
             <button
-              className={styles.libClearBtn}
-              onClick={() => {
-                if (window.confirm('Remove all saved drafts?')) {
-                  drafts.forEach((d) => void deleteDraftBlobsFromIdb(d.id));
-                  setDrafts([]);
-                }
-              }}
+              key={t.id}
+              className={cx(styles.tab, activeTab === t.id && styles.tabActive)}
+              onClick={() => setActiveTab(t.id)}
+              aria-current={activeTab === t.id ? 'page' : undefined}
             >
-              Clear All
+              {t.label}
+              {t.count > 0 && <span className={styles.tabCount}>{t.count}</span>}
             </button>
-          )}
-          {activeTab === 'library' && imageLibrary.length > 0 && (
-            <button
-              className={styles.libClearBtn}
-              onClick={() => { if (window.confirm('Remove all cached images from the library?')) setImageLibrary([]); }}
-            >
-              Clear All
-            </button>
-          )}
+          ))}
+        </nav>
+        <div className={styles.headerTools}>
+          <button
+            className={cx(styles.statusPill, !namingReady && styles.statusPillWarn)}
+            onClick={() => setNamingDialogOpen(true)}
+            title="AI naming settings"
+          >
+            <span className={styles.statusDot} />
+            {namingReady ? 'AI naming' : 'Set up AI naming'}
+          </button>
+          <button
+            className={cx(styles.statusPill, !publishReady && styles.statusPillWarn)}
+            onClick={() => setPublishDialogOpen(true)}
+            title="Roblox publish settings"
+          >
+            <span className={styles.statusDot} />
+            {publishReady ? (creatorType === 'group' ? `Group ${creatorId}` : `User ${creatorId}`) : 'Connect Roblox'}
+          </button>
           <div className={styles.themePickerWrap}>
             <button
-              className={styles.themePickerBtn}
+              className={styles.iconBtn}
               onClick={() => setThemePickerOpen((v) => !v)}
-              title="Change accent color"
-              aria-label="Change accent color"
+              title="Appearance"
+              aria-label="Appearance"
+              aria-expanded={themePickerOpen}
             >
-              <span
-                className={styles.themeSwatchDot}
-                style={{ background: (ACCENT_THEMES.find((t) => t.id === accentThemeId) ?? ACCENT_THEMES[0]).base }}
-              />
-              Theme
+              <span className={styles.themeSwatchDot} style={{ background: accent.base }} />
             </button>
             {themePickerOpen && (
               <>
-                <div
-                  className={styles.themePickerBackdrop}
-                  onClick={() => setThemePickerOpen(false)}
-                />
-                <div className={styles.themePickerMenu}>
-                  <div className={styles.themePickerTitle}>Accent color</div>
-                  <div className={styles.themePickerGrid}>
+                <div className={styles.popoverBackdrop} onClick={() => setThemePickerOpen(false)} />
+                <div className={styles.popover}>
+                  <div className={styles.popoverTitle}>Accent</div>
+                  <div className={styles.swatchGrid}>
                     {ACCENT_THEMES.map((t) => (
                       <button
                         key={t.id}
-                        className={`${styles.themeSwatch}${accentThemeId === t.id ? ` ${styles.themeSwatchActive}` : ''}`}
-                        onClick={() => {
-                          setAccentThemeId(t.id);
-                          setThemePickerOpen(false);
-                        }}
+                        className={cx(styles.swatch, accentThemeId === t.id && styles.swatchActive)}
+                        onClick={() => setAccentThemeId(t.id)}
                         title={t.label}
                       >
-                        <span className={styles.themeSwatchChip} style={{ background: t.base }} />
-                        <span className={styles.themeSwatchLabel}>{t.label}</span>
+                        <span className={styles.swatchChip} style={{ background: t.base }} />
+                        <span>{t.label}</span>
                       </button>
                     ))}
                   </div>
-                  <div className={styles.themePickerDivider} />
-                  <div className={styles.themePickerTitle}>Appearance</div>
-                  <div className={styles.themeModeGrid}>
-                    {([
-                      { id: 'system', label: 'System', icon: '⌁' },
-                      { id: 'dark', label: 'Dark', icon: '◐' },
-                      { id: 'light', label: 'Light', icon: '☀' },
-                    ] as { id: ColorMode; label: string; icon: string }[]).map((m) => (
+                  <div className={styles.popoverTitle}>Appearance</div>
+                  <div className={styles.segmented}>
+                    {(['system', 'dark', 'light'] as ColorMode[]).map((m) => (
                       <button
-                        key={m.id}
-                        className={`${styles.themeModeBtn}${colorMode === m.id ? ` ${styles.themeModeBtnActive}` : ''}`}
-                        onClick={() => setColorMode(m.id)}
-                        title={`${m.label} appearance`}
-                        aria-pressed={colorMode === m.id}
+                        key={m}
+                        className={cx(styles.segment, colorMode === m && styles.segmentActive)}
+                        onClick={() => setColorMode(m)}
+                        aria-pressed={colorMode === m}
                       >
-                        <span className={styles.themeModeIcon} aria-hidden="true">{m.icon}</span>
-                        <span className={styles.themeModeLabel}>{m.label}</span>
+                        {m === 'system' ? 'System' : m === 'dark' ? 'Dark' : 'Light'}
                       </button>
                     ))}
                   </div>
@@ -2678,166 +3150,175 @@ export default function ImageTool() {
               </>
             )}
           </div>
-          <button
-            className={styles.vBadge}
-            onClick={() => setChangelogOpen(true)}
-            title="View changelog"
-          >
+          <button className={styles.iconBtn} onClick={() => setShortcutsOpen(true)} title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+            ?
+          </button>
+          <button className={styles.versionBtn} onClick={() => setChangelogOpen(true)} title="What's new">
             v{APP_VERSION}
           </button>
         </div>
       </header>
 
-      {/* ── Drafts Page ── */}
+      {/* ── Drafts ── */}
       {activeTab === 'drafts' && (
-        <div className={styles.libraryPage}>
+        <div className={styles.page}>
+          <div className={styles.pageHead}>
+            <div>
+              <h1 className={styles.pageTitle}>Drafts</h1>
+              <p className={styles.pageSub}>Work in progress, saved in this browser.</p>
+            </div>
+            {drafts.length > 0 && (
+              <button
+                className={cx(styles.btn, styles.btnQuiet)}
+                onClick={() => {
+                  if (window.confirm('Remove all saved drafts?')) {
+                    drafts.forEach((d) => void deleteDraftBlobsFromIdb(d.id));
+                    setDrafts([]);
+                  }
+                }}
+              >
+                Clear drafts
+              </button>
+            )}
+          </div>
           {drafts.length === 0 ? (
-            <div className={styles.libraryPageEmpty}>
-              <div className={styles.libraryPageEmptyIcon}>⬡</div>
-              <span className={styles.libraryPageEmptyTitle}>No saved drafts</span>
-              <span className={styles.libraryPageEmptySub}>
-                Use the &quot;Save Draft&quot; button in the preview bar to save your work-in-progress images here.
-              </span>
+            <div className={styles.pageEmpty}>
+              <span className={styles.pageEmptyTitle}>No drafts yet</span>
+              <span className={styles.pageEmptySub}>Select an image on the workbench and choose Save draft to keep it here.</span>
+              <button className={cx(styles.btn, styles.btnPrimary)} onClick={() => setActiveTab('tool')}>Go to workbench</button>
             </div>
           ) : (
-            <div className={styles.libraryPageGrid}>
+            <div className={styles.cardGrid}>
               {drafts.map((draft) => (
-                <div key={draft.id} className={styles.libraryPageCard}>
-                  <div className={styles.libraryPageThumb}>
-                    <img src={draft.previewDataUrl} alt={draft.name} className={styles.libraryPageThumbImg} />
-                    <div className={styles.libraryPageOverlay}>
-                      <button
-                        className={styles.libraryPageActionBtn}
-                        onClick={() => void loadDraft(draft)}
-                        title="Load into editor"
-                      >
-                        Load
-                      </button>
-                    </div>
-                    <button
-                      className={styles.libraryPageDeleteBtn}
-                      onClick={() => deleteDraft(draft.id)}
-                      title="Remove draft"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                  <div className={styles.libraryPageInfo}>
-                    <span className={styles.libraryPageName} title={draft.name}>{draft.name}</span>
-                    <span className={styles.draftSettingsTag}>
-                      {draft.exportSettings.tw}×{draft.exportSettings.th} · {draft.exportSettings.format.toUpperCase()}
+                <article key={draft.id} className={styles.card}>
+                  <button className={styles.cardThumb} onClick={() => void loadDraft(draft)} title="Open on workbench">
+                    <img src={draft.previewDataUrl} alt={draft.name} />
+                  </button>
+                  <div className={styles.cardInfo}>
+                    <span className={styles.cardName} title={draft.name}>{draft.name}</span>
+                    <span className={styles.cardMeta}>
+                      {draft.exportSettings.tw}×{draft.exportSettings.th} {draft.exportSettings.format.toUpperCase()}
+                      {draft.hasBgRemoved ? ', cut out' : ''}
                     </span>
-                    {draft.hasBgRemoved && (
-                      <span className={styles.draftBgTag}>BG Removed</span>
-                    )}
-                    <span className={styles.libraryPageDate}>
+                    <span className={styles.cardMeta}>
                       {new Date(draft.savedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                     </span>
                   </div>
-                </div>
+                  <div className={styles.cardActions}>
+                    <button className={cx(styles.btn, styles.btnSmall)} onClick={() => void loadDraft(draft)}>Open</button>
+                    <button className={cx(styles.btn, styles.btnSmall, styles.btnQuiet)} onClick={() => deleteDraft(draft.id)}>Delete</button>
+                  </div>
+                </article>
               ))}
             </div>
           )}
         </div>
       )}
 
-      {/* ── Library Page ── */}
+      {/* ── Library ── */}
       {activeTab === 'library' && (
-        <div className={styles.libraryPage}>
-          {/* ── Import Bar ── */}
-          <div className={styles.libraryImportBar}>
-            <label className={styles.libraryImportLabel}>Import from Roblox</label>
-            <div className={styles.libraryImportRow}>
+        <div className={styles.page}>
+          <div className={styles.pageHead}>
+            <div>
+              <h1 className={styles.pageTitle}>Library</h1>
+              <p className={styles.pageSub}>Everything you’ve published, cached in this browser.</p>
+            </div>
+            <div className={styles.importBox}>
               <input
                 type="text"
-                className={styles.libraryImportInput}
-                placeholder="Asset ID or rbxassetid://..."
+                className={styles.input}
+                placeholder="Asset ID or rbxassetid://…"
                 value={importAssetInput}
                 onChange={(e) => setImportAssetInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && importAssetInput.trim() && !importBusy) {
-                    void importFromAssetId(importAssetInput);
-                  }
+                  if (e.key === 'Enter' && importAssetInput.trim() && !importBusy) void importFromAssetId(importAssetInput);
                 }}
                 disabled={importBusy}
+                aria-label="Roblox asset ID to import"
               />
               <button
-                className={styles.libraryImportBtn}
+                className={cx(styles.btn, styles.btnPrimary)}
                 onClick={() => void importFromAssetId(importAssetInput)}
                 disabled={!importAssetInput.trim() || importBusy}
               >
-                {importBusy ? 'Importing...' : 'Import'}
+                {importBusy ? 'Importing…' : 'Import from Roblox'}
               </button>
             </div>
-            <span className={styles.libraryImportHint}>
-              Paste an asset ID to fetch and load it into the editor.
-            </span>
           </div>
 
+          {imageLibrary.length > 0 && (
+            <div className={styles.libraryTools}>
+              <input
+                type="search"
+                className={cx(styles.input, styles.searchInput)}
+                placeholder={`Search ${imageLibrary.length} assets by name or ID`}
+                value={librarySearch}
+                onChange={(e) => setLibrarySearch(e.target.value)}
+                aria-label="Search library"
+              />
+              <div className={styles.btnRow}>
+                <button className={cx(styles.btn, styles.btnSmall)} onClick={() => void copyLibraryIds(filteredLibrary, 'lua')} disabled={filteredLibrary.length === 0}>
+                  Copy as Luau
+                </button>
+                <button className={cx(styles.btn, styles.btnSmall)} onClick={() => void copyLibraryIds(filteredLibrary, 'json')} disabled={filteredLibrary.length === 0}>
+                  Copy as JSON
+                </button>
+                <button
+                  className={cx(styles.btn, styles.btnSmall, styles.btnQuiet)}
+                  onClick={() => {
+                    if (window.confirm('Remove all cached images from the library? Your assets stay on Roblox.')) {
+                      imageLibrary.forEach((e) => void deleteBlobFromIdb(e.assetId));
+                      setImageLibrary([]);
+                    }
+                  }}
+                >
+                  Clear library
+                </button>
+              </div>
+            </div>
+          )}
+
           {imageLibrary.length === 0 ? (
-            <div className={styles.libraryPageEmpty}>
-              <div className={styles.libraryPageEmptyIcon}>⬡</div>
-              <span className={styles.libraryPageEmptyTitle}>No published images yet</span>
-              <span className={styles.libraryPageEmptySub}>
-                Images published to Roblox appear here. You can also import any Roblox image above.
-              </span>
+            <div className={styles.pageEmpty}>
+              <span className={styles.pageEmptyTitle}>Nothing published yet</span>
+              <span className={styles.pageEmptySub}>Images you publish show up here with their asset IDs. You can also import any Roblox image by ID above.</span>
+            </div>
+          ) : filteredLibrary.length === 0 ? (
+            <div className={styles.pageEmpty}>
+              <span className={styles.pageEmptyTitle}>No matches for “{librarySearch}”</span>
+              <button className={cx(styles.btn, styles.btnQuiet)} onClick={() => setLibrarySearch('')}>Clear search</button>
             </div>
           ) : (
-            <div className={styles.libraryPageGrid}>
-              {imageLibrary.map((entry) => (
-                <div key={entry.id} className={styles.libraryPageCard}>
-                  <div className={styles.libraryPageThumb}>
-                    <img src={entry.previewDataUrl} alt={entry.name} className={styles.libraryPageThumbImg} />
-                    <div className={styles.libraryPageOverlay}>
-                      <button
-                        className={styles.libraryPageActionBtn}
-                        onClick={() => void importLibraryEntry(entry)}
-                        disabled={importBusy}
-                        title="Import to editor"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        className={styles.libraryPageActionBtn}
-                        onClick={() => void downloadLibraryEntry(entry)}
-                        title="Download original"
-                      >
-                        Save
-                      </button>
-                    </div>
-                    <button
-                      className={styles.libraryPageDeleteBtn}
-                      onClick={() => deleteFromLibrary(entry.id)}
-                      title="Remove from library"
-                    >
-                      ✕
+            <div className={styles.cardGrid}>
+              {filteredLibrary.map((entry) => (
+                <article key={entry.id} className={styles.card}>
+                  <button className={styles.cardThumb} onClick={() => void importLibraryEntry(entry)} disabled={importBusy} title="Open on workbench">
+                    <img src={entry.previewDataUrl} alt={entry.name} />
+                  </button>
+                  <div className={styles.cardInfo}>
+                    <span className={styles.cardName} title={entry.name}>{entry.name}</span>
+                    <button className={styles.assetId} onClick={() => void copyLibraryId(entry.assetId)} title="Copy asset ID">
+                      {entry.assetId}
                     </button>
-                  </div>
-                  <div className={styles.libraryPageInfo}>
-                    <span className={styles.libraryPageName} title={entry.name}>{entry.name}</span>
-                    <button
-                      className={styles.libraryPageIdBtn}
-                      onClick={() => copyLibraryId(entry.assetId)}
-                      title={`Copy: ${entry.assetId}`}
-                    >
-                      <span className={styles.libraryPageIdLabel}>rbxassetid://</span>
-                      <span className={styles.libraryPageIdVal}>{entry.assetId}</span>
-                    </button>
-                    <span className={styles.libraryPageDate}>
+                    <span className={styles.cardMeta}>
                       {new Date(entry.publishedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                     </span>
                   </div>
-                </div>
+                  <div className={styles.cardActions}>
+                    <button className={cx(styles.btn, styles.btnSmall)} onClick={() => void importLibraryEntry(entry)} disabled={importBusy}>Edit</button>
+                    <button className={cx(styles.btn, styles.btnSmall)} onClick={() => void downloadLibraryEntry(entry)}>Download</button>
+                    <button className={cx(styles.btn, styles.btnSmall, styles.btnQuiet)} onClick={() => deleteFromLibrary(entry.id)} title="Remove from library" aria-label={`Remove ${entry.name} from library`}>×</button>
+                  </div>
+                </article>
               ))}
             </div>
           )}
         </div>
       )}
 
-      {/* ── Body ── */}
+      {/* ── Workbench ── */}
       {activeTab === 'tool' && <div className={styles.body}>
 
-        {/* Mobile drawer backdrop — hidden on desktop via CSS */}
         {(mobileQueueOpen || mobileControlsOpen) && (
           <div
             className={styles.mobileDrawerBackdrop}
@@ -2845,159 +3326,107 @@ export default function ImageTool() {
           />
         )}
 
-        {/* ── Queue Panel ── */}
-        <div className={`${styles.queuePanel}${mobileQueueOpen ? ` ${styles.queuePanelMobileOpen}` : ''}`}>
-          <div className={styles.queueHeader}>
-            <span className={styles.queueHeaderLabel}>Queue</span>
-            {hasItems && (
-              <span className={styles.queueCountBadge}>{items.length}</span>
-            )}
+        {/* ── Queue ── */}
+        <div className={cx(styles.queuePanel, mobileQueueOpen && styles.queuePanelMobileOpen)}>
+          <div className={styles.panelHead}>
+            <span className={styles.panelTitle}>Queue</span>
+            <div className={styles.panelHeadActions}>
+              <label className={cx(styles.btn, styles.btnSmall, styles.btnPrimary)} title="Add images">
+                Add
+                <input type="file" accept="image/*" multiple className={styles.hiddenInput} onChange={handleFileChange} />
+              </label>
+            </div>
           </div>
 
+          {hasItems && (
+            <div className={styles.filterRow} role="tablist" aria-label="Filter queue">
+              {([
+                { id: 'all', label: 'All', n: items.length },
+                { id: 'todo', label: 'Not cut out', n: items.filter((i) => i.bgStatus !== 'done').length },
+                { id: 'unpublished', label: 'Unpublished', n: unpublishedCount },
+                { id: 'published', label: 'Published', n: finishedCount },
+              ] as { id: QueueFilter; label: string; n: number }[]).map((f) => (
+                <button
+                  key={f.id}
+                  role="tab"
+                  aria-selected={queueFilter === f.id}
+                  className={cx(styles.filterChip, queueFilter === f.id && styles.filterChipActive)}
+                  onClick={() => setQueueFilter(f.id)}
+                >
+                  {f.label} <span className={styles.filterCount}>{f.n}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className={styles.queueList}>
-            {items.map((item) => (
-              <div
-                key={item.id}
-                className={`${styles.thumbCard}${selectedId === item.id ? ` ${styles.selected}` : ''}`}
-                onClick={() => setSelectedId(item.id)}
-              >
-                <div className={styles.thumbImgWrap}>
-                  <img
-                    src={item.previewUrl}
-                    alt={displayNameForItem(item)}
-                    className={styles.thumbImgEl}
-                  />
-                </div>
-                <div className={styles.thumbFooter}>
+            {!hasItems && (
+              <label className={styles.queueEmpty}>
+                <span className={styles.queueEmptyTitle}>Add images to start</span>
+                <span className={styles.queueEmptySub}>Drop files anywhere, paste with Ctrl+V, or click here to browse.</span>
+                <input type="file" accept="image/*" multiple className={styles.hiddenInput} onChange={handleFileChange} />
+              </label>
+            )}
+            {hasItems && visibleItems.length === 0 && (
+              <p className={styles.queueNone}>No images match this filter.</p>
+            )}
+            {visibleItems.map((item) => {
+              const st = statusLine(item);
+              return (
+                <div
+                  key={item.id}
+                  className={cx(styles.thumbCard, selectedId === item.id && styles.selected)}
+                  onClick={() => setSelectedId(item.id)}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={selectedId === item.id}
+                  onKeyDown={(e) => { if (e.key === 'Enter') setSelectedId(item.id); }}
+                >
+                  <div className={styles.thumbImgWrap}>
+                    <img src={item.previewUrl} alt="" className={styles.thumbImgEl} />
+                    {item.bgStatus === 'done' && <span className={styles.thumbCutBadge} title="Background removed" />}
+                    <button
+                      className={styles.thumbRemoveBtn}
+                      onClick={(e) => { e.stopPropagation(); removeItem(item.id); }}
+                      title="Remove from queue"
+                      aria-label={`Remove ${item.fileName}`}
+                    >
+                      ×
+                    </button>
+                  </div>
                   <span
-                    className={`${styles.thumbFileName}${
-                      nameClassForItem(item) ? ` ${nameClassForItem(item)}` : ''
-                    }`}
+                    className={cx(styles.thumbFileName, nameClassForItem(item))}
                     onDoubleClick={(e) => {
                       e.stopPropagation();
                       setSelectedId(item.id);
                       beginEditName(item.id);
                     }}
-                    title="Double-click to rename"
+                    title={`${displayNameForItem(item)} — double-click to rename`}
                   >
                     {displayNameForItem(item)}
                   </span>
-                  <span
-                    className={
-                      item.bgStatus === 'done'
-                        ? styles.thumbBgDotDone
-                        : item.bgStatus === 'processing'
-                        ? styles.thumbBgDotProcessing
-                        : item.bgStatus === 'error'
-                        ? styles.thumbBgDotError
-                        : styles.thumbBgDotIdle
-                    }
-                  />
-                  <button
-                    className={styles.thumbRemoveBtn}
-                    onClick={(e) => { e.stopPropagation(); removeItem(item.id); }}
-                    title="Remove"
-                  >
-                    ✕
-                  </button>
+                  <span className={cx(styles.thumbStatus, styles[`tone_${st.tone}`])}>{st.text}</span>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
-          {/* Add button */}
-          <label className={styles.thumbAddBtn} title="Add images">
-            +
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              className={styles.thumbAddInput}
-              onChange={handleFileChange}
-            />
-          </label>
+          {hasItems && (
+            <div className={styles.queueFoot}>
+              <button className={cx(styles.btn, styles.btnSmall)} onClick={autoNameAll} title="Ask the AI to name every image you haven't renamed">
+                AI name all
+              </button>
+              <button className={cx(styles.btn, styles.btnSmall, styles.btnQuiet)} onClick={clearQueue}>
+                Clear queue
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* ── Preview Panel ── */}
-        <div className={styles.previewPanel}>
-          <div className={styles.previewBar}>
-            {selectedItem && editingNameId === selectedItem.id ? (
-              <div className={styles.nameEditRow}>
-                <input
-                  ref={nameInputRef}
-                  className={styles.nameEditInput}
-                  value={editingNameDraft}
-                  onChange={(e) => setEditingNameDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') { e.preventDefault(); commitEditName(); }
-                    else if (e.key === 'Escape') { e.preventDefault(); cancelEditName(); }
-                  }}
-                  onBlur={commitEditName}
-                  spellCheck={false}
-                  aria-label="Edit image name"
-                />
-                <span className={styles.nameEditExt}>
-                  {splitNameAndExt(selectedItem.fileName).ext || splitNameAndExt(selectedItem.originalFileName).ext}
-                </span>
-              </div>
-            ) : (
-              <span
-                className={`${styles.barLabel}${
-                  selectedItem && nameClassForItem(selectedItem) ? ` ${nameClassForItem(selectedItem)}` : ''
-                }${selectedItem ? ` ${styles.barLabelEditable}` : ''}`}
-                onDoubleClick={selectedItem ? () => beginEditName(selectedItem.id) : undefined}
-                title={selectedItem ? 'Double-click to rename' : undefined}
-              >
-                {selectedItem ? displayNameForItem(selectedItem) : 'Preview'}
-              </span>
-            )}
-            <div className={styles.previewMeta}>
-              {selectedItem && editingNameId !== selectedItem.id && (
-                <button
-                  type="button"
-                  className={styles.nameEditBtn}
-                  onClick={() => beginEditName(selectedItem.id)}
-                  title="Rename image"
-                  aria-label="Rename image"
-                >
-                  Rename
-                </button>
-              )}
-              {selectedItem && selectedItem.nameStatus !== 'loading' && editingNameId !== selectedItem.id && (
-                <button
-                  type="button"
-                  className={styles.nameEditBtn}
-                  onClick={() => retryAutoName(selectedItem.id)}
-                  title="Re-run AI naming"
-                  aria-label="Re-run AI naming"
-                >
-                  AI Name
-                </button>
-              )}
-              {selectedItem && (
-                <button
-                  className={styles.saveDraftBtn}
-                  onClick={() => void saveDraft(selectedItem)}
-                  title="Save to drafts"
-                >
-                  Save Draft
-                </button>
-              )}
-              {selectedItem?.dims && (
-                <span className={styles.dimsTag} title="Original image dimensions">
-                  {selectedItem.dims.w}×{selectedItem.dims.h}
-                </span>
-              )}
-              {selectedItem && (
-                <span className={styles.zoomTag}>{Math.round(viewZoom * 100)}%</span>
-              )}
-              {selectedBg && (
-                <span className={styles.bgRemovedTag}>● BG Removed</span>
-              )}
-            </div>
-          </div>
+        {/* ── Stage ── */}
+        <div className={styles.stagePanel}>
           <div
-            className={`${styles.previewArea}${isDragging ? ` ${styles.dragging}` : ''}`}
+            className={cx(styles.stage, styles[`stage_${previewBg}`], isDragging && styles.dragging)}
             onDragOver={onDragOver}
             onDragLeave={onDragLeave}
             onDrop={onDrop}
@@ -3005,17 +3434,28 @@ export default function ImageTool() {
             {selectedItem ? (
               <div
                 ref={touchViewportRef}
-                className={`${styles.touchWrap}${spaceDown ? ` ${styles.spacePan}` : ''}`}
+                className={cx(styles.touchWrap, spaceDown && styles.spacePan)}
                 onWheel={handleTouchWheel}
                 onContextMenu={(e) => e.preventDefault()}
               >
+                {!touchUpOpen && previewDims && (
+                  <div
+                    className={styles.exportFrame}
+                    style={{ left: frameX, top: frameY, width: frameW, height: frameH }}
+                    aria-hidden="true"
+                  >
+                    <span className={styles.exportFrameLabel}>
+                      {comparing ? 'Original' : `${previewDims.w} × ${previewDims.h}`}
+                    </span>
+                  </div>
+                )}
                 {touchUpOpen ? (
                   <>
                     <canvas
                       ref={touchCanvasRef}
                       className={styles.touchCanvas}
                       style={{
-                        transform: `translate(${viewBase.offsetX + viewPanX}px, ${viewBase.offsetY + viewPanY}px) scale(${viewBase.finalScale})`,
+                        transform: `translate(${frameX}px, ${frameY}px) scale(${viewBase.finalScale})`,
                         transformOrigin: 'top left',
                       }}
                       onPointerDown={handleTouchPointerDown}
@@ -3036,14 +3476,18 @@ export default function ImageTool() {
                   </>
                 ) : (
                   <img
-                    key={selectedItem.previewUrl}
-                    src={exportPreviewUrl ?? selectedItem.previewUrl}
-                    alt="Preview"
+                    key={comparing ? 'original' : selectedItem.previewUrl}
+                    src={(comparing ? originalUrl : null) ?? exportPreviewUrl ?? selectedItem.previewUrl}
+                    alt={`Preview of ${selectedItem.fileName}`}
                     className={styles.previewNavImg}
                     style={{
-                      transform: `translate(${viewBase.offsetX + viewPanX}px, ${viewBase.offsetY + viewPanY}px) scale(${viewBase.finalScale})`,
+                      width: previewDims?.w,
+                      height: previewDims?.h,
+                      objectFit: 'contain',
+                      transform: `translate(${frameX}px, ${frameY}px) scale(${viewBase.finalScale})`,
                       transformOrigin: 'top left',
-                      imageRendering: exportPreviewUrl ? 'pixelated' : undefined,
+                      // Crisp pixels only when zoomed well past 1:1, so small icons read honestly.
+                      imageRendering: exportPreviewUrl && !comparing && viewBase.finalScale >= 2.5 ? 'pixelated' : undefined,
                     }}
                     onPointerDown={(e) => {
                       const isTouch = e.pointerType === 'touch' || e.pointerType === 'pen';
@@ -3064,413 +3508,544 @@ export default function ImageTool() {
                 )}
               </div>
             ) : (
-              <div className={styles.emptyState}>
-                <div className={styles.emptyIcon}>⬡</div>
-                <span className={styles.emptyTitle}>Drop images here</span>
-                <span className={styles.emptySub}>or use the + button →</span>
-              </div>
+              <label className={styles.stageEmpty}>
+                <span className={styles.stageEmptyTitle}>Drop images on the mat</span>
+                <span className={styles.stageEmptySub}>PNG, JPG or WebP. Paste screenshots straight from your clipboard.</span>
+                <span className={cx(styles.btn, styles.btnPrimary)}>Browse files</span>
+                <input type="file" accept="image/*" multiple className={styles.hiddenInput} onChange={handleFileChange} />
+              </label>
             )}
 
-            {/* Overlay for single-item bg processing */}
             {bgBusy && !bgBatchInfo && selectedItem?.bgStatus === 'processing' && (
               <div className={styles.overlay}>
-                <div className={styles.spinner} />
-                <span className={styles.overlayStatus}>Processing…</span>
+                <span className={styles.overlayStatus}>Cutting out the background…</span>
                 <div className={styles.progressTrack}>
                   <div className={styles.progressFill} style={{ width: `${bgPct}%` }} />
                 </div>
-                <span className={styles.overlayPct}>{bgPct}%</span>
               </div>
             )}
+
+            {isDragging && <div className={styles.dropHint}>Drop to add to the queue</div>}
           </div>
+
+          {selectedItem && (
+            <div className={styles.stageBar}>
+              <div className={styles.segmented} role="group" aria-label="Preview background">
+                {PREVIEW_BGS.map((b) => (
+                  <button
+                    key={b.id}
+                    className={cx(styles.segment, previewBg === b.id && styles.segmentActive)}
+                    onClick={() => setPreviewBg(b.id)}
+                    aria-pressed={previewBg === b.id}
+                  >
+                    {b.label}
+                  </button>
+                ))}
+              </div>
+              <div className={styles.stageBarGroup}>
+                <button className={styles.iconBtn} onClick={() => zoomAt(1 / 1.25)} aria-label="Zoom out">−</button>
+                <button
+                  className={styles.zoomReadout}
+                  onClick={() => { setViewZoom(1); setViewPanX(0); setViewPanY(0); }}
+                  title="Fit to view"
+                >
+                  {Math.round(viewZoom * 100)}%
+                </button>
+                <button className={styles.iconBtn} onClick={() => zoomAt(1.25)} aria-label="Zoom in">+</button>
+              </div>
+              {!touchUpOpen && (
+                <button
+                  className={cx(styles.btn, styles.btnSmall, comparing && styles.btnPressed)}
+                  onPointerDown={() => setComparing(true)}
+                  onPointerUp={() => setComparing(false)}
+                  onPointerLeave={() => setComparing(false)}
+                  title="Hold to see the original (or hold C)"
+                >
+                  Hold to compare
+                </button>
+              )}
+              <span className={styles.stageBarMeta}>
+                {selectedItem.dims ? `Source ${selectedItem.dims.w}×${selectedItem.dims.h}` : ''}
+                {' '}{fmtBytes(activeBlob(selectedItem).size)}
+              </span>
+            </div>
+          )}
         </div>
 
-        {/* ── Controls ── */}
-        <aside className={`${styles.controls}${mobileControlsOpen ? ` ${styles.controlsMobileOpen}` : ''}`}>
-
-          {/* 01 — Export Settings */}
-          <div className={styles.section}>
-            <div className={styles.sectionHead}>
-              <span className={styles.sectionNum}>01</span>
-              <span className={styles.sectionTitle}>Export Settings</span>
+        {/* ── Inspector ── */}
+        <aside className={cx(styles.inspector, mobileControlsOpen && styles.inspectorMobileOpen)}>
+          {!selectedItem ? (
+            <div className={styles.inspectorEmpty}>
+              <p>Select an image to edit its name, size and cut-out.</p>
+              {hasItems && <p className={styles.mutedText}>{items.length} in the queue, {finishedCount} published.</p>}
             </div>
-            <div className={styles.sectionBody}>
-
-              <div>
-                <label className={styles.label}>Dimensions (px)</label>
-                <div className={styles.inputRow}>
-                  <input
-                    type="number"
-                    className={`${styles.input} ${styles.inputFlex}`}
-                    value={tw}
-                    min={1}
-                    max={4096}
-                    onChange={(e) => changeW(Number(e.target.value))}
-                    placeholder="W"
-                  />
+          ) : (
+            <>
+              <Section open={openSections.name} onToggle={() => toggleSection('name')} title="Name" aside={selectedItem.nameStatus === 'manual' ? 'Edited' : selectedItem.nameStatus === 'done' ? 'AI' : undefined}>
+                {editingNameId === selectedItem.id ? (
+                  <div className={styles.nameEditRow}>
+                    <input
+                      ref={nameInputRef}
+                      className={cx(styles.input, styles.nameEditInput)}
+                      value={editingNameDraft}
+                      onChange={(e) => setEditingNameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); commitEditName(); }
+                        else if (e.key === 'Escape') { e.preventDefault(); cancelEditName(); }
+                      }}
+                      onBlur={commitEditName}
+                      spellCheck={false}
+                      aria-label="Image name"
+                    />
+                    <span className={styles.nameEditExt}>
+                      {splitNameAndExt(selectedItem.fileName).ext || splitNameAndExt(selectedItem.originalFileName).ext}
+                    </span>
+                  </div>
+                ) : (
                   <button
-                    className={`${styles.lockBtn}${locked ? ` ${styles.locked}` : ''}`}
-                    onClick={() => setExport({ locked: !locked })}
-                    title={locked ? 'Unlock aspect ratio' : 'Lock aspect ratio'}
+                    className={cx(styles.nameDisplay, nameClassForItem(selectedItem))}
+                    onClick={() => beginEditName(selectedItem.id)}
+                    title="Click to rename"
                   >
-                    {locked ? '⊟' : '⊞'}
-                  </button>
-                  <input
-                    type="number"
-                    className={`${styles.input} ${styles.inputFlex}`}
-                    value={th}
-                    min={1}
-                    max={4096}
-                    onChange={(e) => changeH(Number(e.target.value))}
-                    placeholder="H"
-                  />
-                </div>
-                {items.length > 1 && (
-                  <button
-                    className={styles.applyAllBtn}
-                    onClick={applyDimensionsToAll}
-                    title={`Apply ${tw}×${th} to all ${items.length} images`}
-                  >
-                    Apply to all ({items.length})
+                    {selectedItem.nameStatus === 'loading' ? 'Naming…' : selectedItem.fileName}
                   </button>
                 )}
-              </div>
-
-              <div className={styles.sliderGroup}>
-                <div className={styles.sliderLabelRow}>
-                  <label className={styles.label} style={{ marginBottom: 0 }}>Quality</label>
-                  <span className={styles.sliderVal}>{quality}%</span>
+                {selectedItem.nameStatus === 'error' && (
+                  <p className={styles.errorText}>
+                    {selectedItem.nameError ?? 'AI naming failed.'}{' '}
+                    <button className={styles.linkBtn} onClick={() => setNamingDialogOpen(true)}>Naming settings</button>
+                  </p>
+                )}
+                {selectedItem.nameAlts && selectedItem.nameAlts.length > 0 && selectedItem.nameStatus !== 'loading' && (
+                  <div className={styles.altRow}>
+                    <span className={styles.mutedText}>Or try</span>
+                    {selectedItem.nameAlts.map((alt) => (
+                      <button
+                        key={alt.join(' ')}
+                        className={styles.altChip}
+                        onClick={() => pickAlternativeName(selectedItem.id, alt)}
+                      >
+                        {buildName(alt, namingOptions)}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className={styles.btnRow}>
+                  <button
+                    className={cx(styles.btn, styles.btnSmall)}
+                    onClick={() => retryAutoName(selectedItem.id)}
+                    disabled={selectedItem.nameStatus === 'loading'}
+                  >
+                    {selectedItem.nameStatus === 'loading' ? 'Naming…' : selectedItem.nameStatus === 'done' ? 'New AI name' : 'AI name'}
+                  </button>
+                  <button className={cx(styles.btn, styles.btnSmall)} onClick={() => beginEditName(selectedItem.id)}>Rename</button>
+                  <button className={cx(styles.btn, styles.btnSmall, styles.btnQuiet)} onClick={() => setNamingDialogOpen(true)}>
+                    {NAME_STYLE_LABELS[namingOptions.style]}
+                  </button>
                 </div>
-                <input
-                  type="range"
-                  className={styles.slider}
-                  min={1}
-                  max={100}
-                  value={quality}
-                  disabled={format === 'png'}
-                  onChange={(e) => setExport({ quality: Number(e.target.value) })}
-                />
-              </div>
+              </Section>
 
-              <div>
-                <label className={styles.label}>Format</label>
-                <div className={styles.toggleGroup}>
-                  {(['png', 'jpeg', 'webp'] as Format[]).map((f) => (
+              <Section open={openSections.size} onToggle={() => toggleSection('size')} title="Size" aside={`${tw}×${th}`}>
+                <div className={styles.presetRow}>
+                  {SIZE_PRESETS.map((p) => (
                     <button
-                      key={f}
-                      className={`${styles.toggleBtn}${format === f ? ` ${styles.active}` : ''}`}
-                      onClick={() => setExport({ format: f })}
+                      key={p.label}
+                      className={cx(styles.presetChip, tw === p.w && th === p.h && styles.presetChipActive)}
+                      onClick={() => applyPresetSize(p)}
+                      title={p.hint}
                     >
-                      {f.toUpperCase()}
+                      {p.label}
+                    </button>
+                  ))}
+                  {selectedItem.dims && (
+                    <button
+                      className={cx(styles.presetChip, tw === selectedItem.dims.w && th === selectedItem.dims.h && styles.presetChipActive)}
+                      onClick={resetToOriginalSize}
+                      title="Source image size"
+                    >
+                      Original
+                    </button>
+                  )}
+                </div>
+                <div className={styles.dimRow}>
+                  <label className={styles.dimField}>
+                    <span>W</span>
+                    <input type="number" className={styles.input} value={tw} min={1} max={4096} onChange={(e) => changeW(Number(e.target.value))} />
+                  </label>
+                  <button
+                    className={cx(styles.lockBtn, locked && styles.locked)}
+                    onClick={() => setExport({ locked: !locked })}
+                    title={locked ? 'Aspect ratio locked — click to stretch freely' : 'Aspect ratio unlocked — image stretches to fill'}
+                    aria-pressed={locked}
+                  >
+                    {locked ? 'Locked' : 'Free'}
+                  </button>
+                  <label className={styles.dimField}>
+                    <span>H</span>
+                    <input type="number" className={styles.input} value={th} min={1} max={4096} onChange={(e) => changeH(Number(e.target.value))} />
+                  </label>
+                </div>
+                {items.length > 1 && (
+                  <button className={cx(styles.linkBtn)} onClick={applyDimensionsToAll}>
+                    Use {tw}×{th} for all {items.length} images
+                  </button>
+                )}
+              </Section>
+
+              <Section open={openSections.look} onToggle={() => toggleSection('look')} title="Look" aside={es.fill || es.padding || brightness !== 100 ? 'Adjusted' : undefined}>
+                <div className={styles.field}>
+                  <div className={styles.fieldRow}>
+                    <span className={styles.label}>Padding</span>
+                    <span className={styles.fieldValue}>{es.padding ?? 0}%</span>
+                  </div>
+                  <input type="range" className={styles.slider} min={0} max={40} value={es.padding ?? 0} onChange={(e) => setExport({ padding: Number(e.target.value) })} />
+                </div>
+                <div className={styles.field}>
+                  <div className={styles.fieldRow}>
+                    <span className={styles.label}>Brightness</span>
+                    <span className={styles.fieldValue}>{brightness}%</span>
+                  </div>
+                  <input type="range" className={styles.slider} min={0} max={200} value={brightness} onChange={(e) => setExport({ brightness: Number(e.target.value) })} />
+                </div>
+                <div className={styles.field}>
+                  <span className={styles.label}>Background</span>
+                  <div className={styles.fillRow}>
+                    <button
+                      className={cx(styles.fillSwatch, styles.fillNone, !es.fill && styles.fillSwatchActive)}
+                      onClick={() => setExport({ fill: null })}
+                      title="Transparent"
+                      aria-label="Transparent background"
+                    />
+                    {FILL_SWATCHES.map((c) => (
+                      <button
+                        key={c}
+                        className={cx(styles.fillSwatch, es.fill === c && styles.fillSwatchActive)}
+                        style={{ background: c }}
+                        onClick={() => setExport({ fill: c })}
+                        title={c}
+                        aria-label={`Fill ${c}`}
+                      />
+                    ))}
+                    <label className={cx(styles.fillSwatch, styles.fillCustom)} title="Custom colour">
+                      <input
+                        type="color"
+                        value={es.fill ?? '#ffffff'}
+                        onChange={(e) => setExport({ fill: e.target.value })}
+                        aria-label="Custom background colour"
+                      />
+                    </label>
+                  </div>
+                </div>
+                {items.length > 1 && (
+                  <button className={styles.linkBtn} onClick={applyAllSettingsToAll}>Copy all settings to every image</button>
+                )}
+              </Section>
+
+              <Section open={openSections.cutout} onToggle={() => toggleSection('cutout')} title="Cut out" aside={selectedBg ? 'Done' : undefined}>
+                {!touchUpOpen ? (
+                  <>
+                    <div className={styles.btnRow}>
+                      <button
+                        className={cx(styles.btn, styles.btnPrimary, styles.btnGrow)}
+                        onClick={() => requestBgAction('one')}
+                        disabled={bgBusy || selectedItem.bgStatus === 'processing'}
+                      >
+                        {selectedItem.bgStatus === 'processing' ? 'Cutting out…' : selectedBg ? 'Cut out again' : 'Remove background'}
+                      </button>
+                      <button
+                        className={styles.btn}
+                        onClick={openTouchUp}
+                        disabled={!selectedItem.processedBlob || bgBusy || touchUpBusy}
+                        title="Erase leftovers or paint back missing bits"
+                      >
+                        {touchUpBusy ? 'Opening…' : 'Touch up'}
+                      </button>
+                    </div>
+                    {items.length > 1 && (
+                      <button className={styles.linkBtn} onClick={() => requestBgAction('all')} disabled={bgBusy}>
+                        {bgBusy && bgBatchInfo ? `Cutting out ${bgBatchInfo.current} of ${bgBatchInfo.total}…` : 'Remove background from every image'}
+                      </button>
+                    )}
+                    {selectedItem.bgStatus === 'error' && <p className={styles.errorText}>{selectedItem.bgError}</p>}
+                    <p className={styles.mutedText}>Runs in your browser. The first run downloads a {BG_MODEL_ESTIMATED_SIZE} model once.</p>
+                  </>
+                ) : (
+                  <div className={styles.touchTools}>
+                    <div className={styles.segmented}>
+                      <button className={cx(styles.segment, touchToolMode === 'erase' && styles.segmentActive)} onClick={() => setTouchToolMode('erase')}>Erase</button>
+                      <button className={cx(styles.segment, touchToolMode === 'restore' && styles.segmentActive)} onClick={() => setTouchToolMode('restore')}>Restore</button>
+                    </div>
+                    <div className={styles.field}>
+                      <div className={styles.fieldRow}>
+                        <span className={styles.label}>Brush size</span>
+                        <span className={styles.fieldValue}>{brushSize}px</span>
+                      </div>
+                      <input type="range" className={styles.slider} min={1} max={80} value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} />
+                    </div>
+                    <label className={styles.checkRow}>
+                      <input type="checkbox" checked={smartRefine} onChange={(e) => setSmartRefine(e.target.checked)} />
+                      <span>Smart refine — only affect similar colours under the brush</span>
+                    </label>
+                    {smartRefine && (
+                      <div className={styles.field}>
+                        <div className={styles.fieldRow}>
+                          <span className={styles.label}>Colour tolerance</span>
+                          <span className={styles.fieldValue}>{smartTolerance}</span>
+                        </div>
+                        <input type="range" className={styles.slider} min={8} max={96} value={smartTolerance} onChange={(e) => setSmartTolerance(Number(e.target.value))} />
+                      </div>
+                    )}
+                    <div className={styles.btnRow}>
+                      <button className={cx(styles.btn, styles.btnPrimary, styles.btnGrow)} onClick={applyTouchUp}>Apply touch-up</button>
+                      <button className={styles.btn} onClick={cancelTouchUp}>Cancel</button>
+                    </div>
+                    <p className={styles.mutedText}>Scroll to zoom, hold Space to pan, Ctrl/Cmd+Z to undo.</p>
+                  </div>
+                )}
+              </Section>
+
+              <Section open={openSections.publish} onToggle={() => toggleSection('publish')} title="Publish to Roblox" aside={finishedCount > 0 ? `${finishedCount}/${items.length}` : undefined}>
+                {!publishReady && (
+                  <p className={styles.mutedText}>
+                    Connect a Roblox API key first.{' '}
+                    <button className={styles.linkBtn} onClick={() => setPublishDialogOpen(true)}>Publish settings</button>
+                  </p>
+                )}
+                {selectedItem.pubAssetId && (
+                  <button className={styles.assetIdLarge} onClick={() => void copyAssetId(selectedItem.id)} title="Copy asset ID">
+                    <span className={styles.mutedText}>rbxassetid://</span>{selectedItem.pubAssetId}
+                  </button>
+                )}
+                {selectedItem.pubStatus === 'error' && <p className={styles.errorText}>{selectedItem.pubError}</p>}
+                <div className={styles.btnRow}>
+                  <button
+                    className={cx(styles.btn, styles.btnPrimary, styles.btnGrow)}
+                    onClick={() => void publishOne(selectedItem.id)}
+                    disabled={publishing || !publishReady}
+                  >
+                    {selectedItem.pubStatus === 'publishing' ? 'Publishing…' : selectedItem.pubAssetId ? 'Publish again' : 'Publish'}
+                  </button>
+                  {items.length > 1 && (
+                    <button
+                      className={styles.btn}
+                      onClick={() => void publishAll()}
+                      disabled={publishing || !publishReady}
+                      title={skipPublished ? 'Publishes images that don’t have an asset ID yet' : 'Publishes every image'}
+                    >
+                      {publishing ? 'Publishing…' : `Publish all (${skipPublished ? unpublishedCount : items.length})`}
+                    </button>
+                  )}
+                </div>
+                {items.length > 1 && (
+                  <label className={styles.checkRow}>
+                    <input type="checkbox" checked={skipPublished} onChange={(e) => setSkipPublished(e.target.checked)} />
+                    <span>Skip images that are already published</span>
+                  </label>
+                )}
+                {hasSomeAssetId && (
+                  <div className={styles.copyIds}>
+                    <span className={styles.mutedText}>Copy {finishedCount} ID{finishedCount === 1 ? '' : 's'} as</span>
+                    <button className={styles.altChip} onClick={() => void copyAllIds('lua')}>Luau table</button>
+                    <button className={styles.altChip} onClick={() => void copyAllIds('json')}>JSON</button>
+                    <button className={styles.altChip} onClick={() => void copyAllIds('list')}>List</button>
+                  </div>
+                )}
+              </Section>
+
+              <Section open={openSections.export} onToggle={() => toggleSection('export')} title="Export" aside={format.toUpperCase()}>
+                <div className={styles.segmented}>
+                  {(['png', 'jpeg', 'webp'] as Format[]).map((f) => (
+                    <button key={f} className={cx(styles.segment, format === f && styles.segmentActive)} onClick={() => setExport({ format: f })}>
+                      {f === 'jpeg' ? 'JPG' : f.toUpperCase()}
                     </button>
                   ))}
                 </div>
-              </div>
-
-            </div>
-          </div>
-
-          {/* 01.5 — Adjustments */}
-          <div className={styles.section}>
-            <div className={styles.sectionHead}>
-              <span className={styles.sectionNum}>01.5</span>
-              <span className={styles.sectionTitle}>Adjustments</span>
-            </div>
-            <div className={styles.sectionBody}>
-              <div className={styles.sliderGroup}>
-                <div className={styles.sliderLabelRow}>
-                  <label className={styles.label} style={{ marginBottom: 0 }}>Brightness</label>
-                  <span className={styles.sliderVal}>{brightness}%</span>
-                </div>
-                <input
-                  type="range"
-                  className={styles.slider}
-                  min={0}
-                  max={200}
-                  value={brightness}
-                  onChange={(e) => setExport({ brightness: Number(e.target.value) })}
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* 02 — Background Removal */}
-          <div className={styles.section}>
-            <div className={styles.sectionHead}>
-              <span className={styles.sectionNum}>02</span>
-              <span className={styles.sectionTitle}>Remove Background</span>
-            </div>
-            <div className={`${styles.sectionBody} ${styles.sectionBodyComfort}`}>
-
-              <div className={`${styles.btnGroup} ${styles.btnGroupLoose}`}>
-                <button
-                  className={`${styles.btn} ${styles.btnPrimary} ${styles.btnFull}`}
-                  onClick={() => {
-                    if (!selectedId) return;
-                    requestBgAction('one');
-                  }}
-                  disabled={!selectedItem || bgBusy || selectedItem.bgStatus === 'processing'}
-                  title="Process only the selected image"
-                >
-                  {selectedItem?.bgStatus === 'processing' ? '◌ Processing…' : '⬡ Remove BG'}
-                </button>
-                <button
-                  className={`${styles.btn} ${styles.btnFull}`}
-                  onClick={() => {
-                    requestBgAction('all');
-                  }}
-                  disabled={
-                    !hasItems ||
-                    bgBusy
-                  }
-                  title="Batch process all queued images"
-                >
-                  {bgBusy && bgBatchInfo ? '◌ Processing All…' : 'Remove BG from All'}
-                </button>
-              </div>
-              <p className={styles.subtleHint}>
-                First run downloads a browser AI model ({BG_MODEL_ESTIMATED_SIZE}) one time.
-              </p>
-
-              {!touchUpOpen ? (
-                <button
-                  className={`${styles.btn} ${styles.btnFull}`}
-                  onClick={openTouchUp}
-                  disabled={!selectedItem || !selectedItem.processedBlob || bgBusy || touchUpBusy}
-                  title="Manually erase leftovers or restore missing spots"
-                >
-                  {touchUpBusy ? '◌ Opening Brush…' : '✎ Touch Up (Brush)'}
-                </button>
-              ) : (
-                <div className={styles.touchToolsCard}>
-                  <div className={styles.touchCardHead}>
-                    <span className={styles.touchCardTitle}>Touch-up</span>
-                    <span className={styles.touchCardSub}>Erase or restore on the preview</span>
+                {format !== 'png' && (
+                  <div className={styles.field}>
+                    <div className={styles.fieldRow}>
+                      <span className={styles.label}>Quality</span>
+                      <span className={styles.fieldValue}>{quality}%</span>
+                    </div>
+                    <input type="range" className={styles.slider} min={1} max={100} value={quality} onChange={(e) => setExport({ quality: Number(e.target.value) })} />
                   </div>
-                  <div className={styles.touchTools}>
-                    <div className={styles.touchField}>
-                      <label className={styles.label}>Tool</label>
-                      <div className={styles.toggleGroup}>
-                        <button
-                          className={`${styles.toggleBtn}${touchToolMode === 'erase' ? ` ${styles.active}` : ''}`}
-                          onClick={() => setTouchToolMode('erase')}
-                        >
-                          Erase
-                        </button>
-                        <button
-                          className={`${styles.toggleBtn}${touchToolMode === 'restore' ? ` ${styles.active}` : ''}`}
-                          onClick={() => setTouchToolMode('restore')}
-                        >
-                          Restore
-                        </button>
-                      </div>
-                    </div>
-                    <div className={`${styles.sliderGroup} ${styles.sliderGroupComfort}`}>
-                      <div className={styles.sliderLabelRowComfort}>
-                        <label className={styles.labelComfort}>Brush size</label>
-                        <span className={styles.sliderValPill}>{brushSize}px</span>
-                      </div>
-                      <input
-                        type="range"
-                        className={`${styles.slider} ${styles.sliderComfort}`}
-                        min={1}
-                        max={80}
-                        value={brushSize}
-                        onChange={(e) => setBrushSize(Number(e.target.value))}
-                      />
-                    </div>
-                    <label className={styles.smartToggleComfort}>
-                      <input
-                        type="checkbox"
-                        checked={smartRefine}
-                        onChange={(e) => setSmartRefine(e.target.checked)}
-                      />
-                      <span>Smart area refine</span>
-                    </label>
-                    <div className={`${styles.sliderGroup} ${styles.sliderGroupComfort}`}>
-                      <div className={styles.sliderLabelRowComfort}>
-                        <label className={styles.labelComfort}>Select tolerance</label>
-                        <span className={styles.sliderValPill}>{smartTolerance}</span>
-                      </div>
-                      <input
-                        type="range"
-                        className={`${styles.slider} ${styles.sliderComfort}`}
-                        min={8}
-                        max={96}
-                        value={smartTolerance}
-                        disabled={!smartRefine}
-                        onChange={(e) => setSmartTolerance(Number(e.target.value))}
-                      />
-                    </div>
-                    <div className={styles.touchActionsRow}>
-                      <button className={`${styles.btn} ${styles.btnPrimary} ${styles.btnFull}`} onClick={applyTouchUp}>
-                        Apply Touch-Up
-                      </button>
-                      <button className={`${styles.btn} ${styles.btnFull}`} onClick={cancelTouchUp}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
+                )}
+                {format === 'jpeg' && !es.fill && <p className={styles.mutedText}>JPG has no transparency, so it gets a white background.</p>}
+                <div className={styles.btnRow}>
+                  <button className={cx(styles.btn, styles.btnGrow)} onClick={() => void downloadOne(selectedItem.id)}>Download</button>
+                  <button className={styles.btn} onClick={() => void saveDraft(selectedItem)}>Save draft</button>
                 </div>
-              )}
-
-              {bgBatchInfo && (
-                <div className={styles.batchInfo}>
-                  <div className={styles.batchSpinner} />
-                  <span className={styles.batchInfoText}>
-                    Processing {bgBatchInfo.current} / {bgBatchInfo.total}…
-                  </span>
-                </div>
-              )}
-
-              {touchUpOpen && (
-                <p className={styles.hintComfort}>
-                  Smart refine grows the edit to similar colors inside the brush. Use smaller tolerance for precise edges.
-                </p>
-              )}
-
-            </div>
-          </div>
-
-          {/* 03 — Publish to Roblox */}
-          <div className={styles.section}>
-            <div className={styles.sectionHead}>
-              <span className={styles.sectionNum}>03</span>
-              <span className={styles.sectionTitle}>Publish to Roblox</span>
-            </div>
-            <div className={styles.sectionBody}>
-              <div className={styles.publishRow}>
-                <button
-                  className={`${styles.btn} ${styles.btnPrimary} ${styles.btnFull}`}
-                  onClick={publishAll}
-                  disabled={!hasItems || publishing || !apiKey.trim() || !creatorId.trim()}
-                >
-                  {publishing
-                    ? '◌ Publishing…'
-                    : `▶ Publish All (${items.length} image${items.length !== 1 ? 's' : ''})`}
-                </button>
-                <button
-                  className={styles.configGearBtn}
-                  onClick={() => setPublishDialogOpen(true)}
-                  disabled={!hasItems}
-                  title="Open publish config"
-                  aria-label="Open publish config"
-                >
-                  ⚙
-                </button>
-              </div>
-              {selectedItem && (
-                <button
-                  className={`${styles.btn} ${styles.btnFull}`}
-                  onClick={() => publishOne(selectedItem.id)}
-                  disabled={publishing || !apiKey.trim() || !creatorId.trim()}
-                >
-                  {selectedItem.pubStatus === 'publishing' ? '◌ Publishing…' : '▶ Publish Selected'}
-                </button>
-              )}
-              <p className={styles.hint}>
-                {finishedCount > 0
-                  ? `${finishedCount} / ${items.length} published`
-                  : 'Configure once in modal, publish from sidebar.'}
-              </p>
-            </div>
-          </div>
-
-          {/* 04 — Download */}
-          <div className={styles.section}>
-            <div className={styles.sectionHead}>
-              <span className={styles.sectionNum}>04</span>
-              <span className={styles.sectionTitle}>Download</span>
-            </div>
-            <div className={styles.sectionBody}>
-
-              <button
-                className={`${styles.btn} ${styles.btnGreen} ${styles.btnFull}`}
-                onClick={downloadAll}
-                disabled={!hasItems}
-              >
-                ↓ Download All ({items.length})
-              </button>
-
-              {selectedItem && (
-                <button
-                  className={`${styles.btn} ${styles.btnFull}`}
-                  onClick={() => downloadOne(selectedItem.id)}
-                >
-                  ↓ Download Selected
-                </button>
-              )}
-
-              <p className={styles.hint}>
-                {tw}×{th}px · {format.toUpperCase()} · {quality}% quality
-              </p>
-
-            </div>
-          </div>
-
+                {items.length > 1 && (
+                  <button className={styles.linkBtn} onClick={() => void downloadAllZip()} disabled={zipBusy}>
+                    {zipBusy ? 'Building ZIP…' : `Download all ${items.length} as ZIP`}
+                  </button>
+                )}
+              </Section>
+            </>
+          )}
         </aside>
 
-        {/* Mobile FABs — hidden on desktop via CSS */}
         <button
           type="button"
-          className={`${styles.mobileFab} ${styles.mobileFabQueue}`}
+          className={cx(styles.mobileFab, styles.mobileFabQueue)}
           onClick={() => { setMobileQueueOpen((v) => !v); setMobileControlsOpen(false); }}
-          aria-label="Toggle queue panel"
+          aria-label="Toggle queue"
         >
-          <span className={styles.mobileFabIcon} aria-hidden="true">⬡</span>
-          <span>Queue</span>
-          {hasItems && <span className={styles.mobileFabBadge}>{items.length}</span>}
+          Queue{hasItems && <span className={styles.mobileFabBadge}>{items.length}</span>}
         </button>
         <button
           type="button"
-          className={`${styles.mobileFab} ${styles.mobileFabControls}`}
+          className={cx(styles.mobileFab, styles.mobileFabControls)}
           onClick={() => { setMobileControlsOpen((v) => !v); setMobileQueueOpen(false); }}
-          aria-label="Toggle tools panel"
+          aria-label="Toggle inspector"
         >
-          <span className={styles.mobileFabIcon} aria-hidden="true">⚙</span>
-          <span>Tools</span>
+          Edit
         </button>
       </div>}
 
       {/* Toast */}
       {toast && (
         <div
-          className={`${styles.toast} ${
-            toast.kind === 'ok'
-              ? styles.toastOk
-              : toast.kind === 'err'
-              ? styles.toastErr
-              : styles.toastInfo
-          }`}
+          role="status"
+          className={cx(styles.toast, toast.kind === 'ok' ? styles.toastOk : toast.kind === 'err' ? styles.toastErr : styles.toastInfo)}
         >
           {toast.msg}
         </div>
       )}
 
       {bgNoticeDialogOpen && (
-        <div className={`${styles.dialogBackdrop} ${styles.open}`} onClick={closeBgNoticeDialog}>
-          <div className={styles.dialogPanel} onClick={(e) => e.stopPropagation()}>
+        <div className={cx(styles.dialogBackdrop, styles.open)} onClick={closeBgNoticeDialog}>
+          <div className={styles.dialogPanel} role="dialog" aria-modal="true" aria-label="Download background model" onClick={(e) => e.stopPropagation()}>
             <div className={styles.dialogHead}>
-              <span className={styles.dialogTitle}>First-time AI model download</span>
-              <button className={styles.dialogClose} onClick={closeBgNoticeDialog} title="Close dialog">
-                ✕
-              </button>
+              <span className={styles.dialogTitle}>Download the cut-out model?</span>
+              <button className={styles.dialogClose} onClick={closeBgNoticeDialog} aria-label="Close">×</button>
             </div>
             <div className={styles.dialogBody}>
-              <p className={styles.subtleHint}>
-                Pixel Forge will download the browser AI model ({BG_MODEL_ESTIMATED_SIZE}) one time.
-                Keep this tab open during the initial download.
+              <p>Background removal runs in your browser, so the model ({BG_MODEL_ESTIMATED_SIZE}) downloads once. Keep this tab open until it finishes.</p>
+              <p className={styles.mutedText}>After that it’s cached and starts much faster.</p>
+              <div className={styles.dialogActions}>
+                <button className={cx(styles.btn, styles.btnQuiet)} onClick={closeBgNoticeDialog}>Not now</button>
+                <button className={cx(styles.btn, styles.btnPrimary)} onClick={confirmBgNoticeDialog}>Download and cut out</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {namingDialogOpen && (
+        <div className={cx(styles.dialogBackdrop, styles.open)} onClick={() => setNamingDialogOpen(false)}>
+          <div className={styles.dialogPanel} role="dialog" aria-modal="true" aria-label="AI naming settings" onClick={(e) => e.stopPropagation()}>
+            <div className={styles.dialogHead}>
+              <span className={styles.dialogTitle}>AI naming</span>
+              <button className={styles.dialogClose} onClick={() => setNamingDialogOpen(false)} aria-label="Close">×</button>
+            </div>
+            <div className={styles.dialogBody}>
+              <div className={styles.field}>
+                <span className={styles.label}>Style</span>
+                <div className={styles.styleGrid}>
+                  {(Object.keys(NAME_STYLE_LABELS) as NameStyle[]).map((st) => (
+                    <button
+                      key={st}
+                      className={cx(styles.styleOption, namingOptions.style === st && styles.styleOptionActive)}
+                      onClick={() => setNamingOptions((o) => ({ ...o, style: st }))}
+                      aria-pressed={namingOptions.style === st}
+                    >
+                      {buildName(['gold', 'coin'], { style: st, prefix: '', suffix: '' })}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className={styles.field}>
+                <div className={styles.fieldRow}>
+                  <span className={styles.label}>Max words</span>
+                  <span className={styles.fieldValue}>{namingOptions.maxWords}</span>
+                </div>
+                <input
+                  type="range"
+                  className={styles.slider}
+                  min={1}
+                  max={4}
+                  value={namingOptions.maxWords}
+                  onChange={(e) => setNamingOptions((o) => ({ ...o, maxWords: Number(e.target.value) }))}
+                />
+              </div>
+              <div className={styles.twoCol}>
+                <label className={styles.field}>
+                  <span className={styles.label}>Prefix</span>
+                  <input className={styles.input} value={namingOptions.prefix} placeholder="e.g. ui" onChange={(e) => setNamingOptions((o) => ({ ...o, prefix: e.target.value }))} />
+                </label>
+                <label className={styles.field}>
+                  <span className={styles.label}>Suffix</span>
+                  <input className={styles.input} value={namingOptions.suffix} placeholder="e.g. icon" onChange={(e) => setNamingOptions((o) => ({ ...o, suffix: e.target.value }))} />
+                </label>
+              </div>
+              <p className={styles.mutedText}>
+                Preview: <strong>{buildName(['energy', 'orb'], namingOptions)}.png</strong>
               </p>
-              <p className={styles.subtleHint}>
-                Later Remove BG runs will use the cached model and start much faster.
-              </p>
-              <div className={`${styles.btnGroup} ${styles.btnGroupLoose}`}>
-                <button className={`${styles.btn} ${styles.btnFull}`} onClick={closeBgNoticeDialog}>
-                  Cancel
-                </button>
-                <button className={`${styles.btn} ${styles.btnPrimary} ${styles.btnFull}`} onClick={confirmBgNoticeDialog}>
-                  Continue
-                </button>
+              <label className={styles.field}>
+                <span className={styles.label}>What are these images for?</span>
+                <textarea
+                  className={cx(styles.input, styles.textarea)}
+                  rows={2}
+                  maxLength={300}
+                  value={namingOptions.context}
+                  placeholder="e.g. Pet items for a tycoon game — name pets by species, food by type"
+                  onChange={(e) => setNamingOptions((o) => ({ ...o, context: e.target.value }))}
+                />
+              </label>
+              <label className={styles.checkRow}>
+                <input
+                  type="checkbox"
+                  checked={namingOptions.autoOnImport}
+                  onChange={(e) => setNamingOptions((o) => ({ ...o, autoOnImport: e.target.checked }))}
+                />
+                <span>Name images automatically when they’re added</span>
+              </label>
+
+              <details className={styles.advanced}>
+                <summary>Model and API key</summary>
+                <label className={styles.field}>
+                  <span className={styles.label}>OpenRouter model</span>
+                  <input
+                    className={cx(styles.input, styles.mono)}
+                    value={namingOptions.model}
+                    placeholder={namingServer?.defaultModel ?? DEFAULT_VISION_MODEL}
+                    spellCheck={false}
+                    onChange={(e) => setNamingOptions((o) => ({ ...o, model: e.target.value }))}
+                  />
+                  <span className={styles.mutedText}>Any OpenRouter model that accepts images. Leave blank for the default; fallbacks kick in automatically.</span>
+                </label>
+                <label className={styles.field}>
+                  <span className={styles.label}>Your OpenRouter key (optional)</span>
+                  <input
+                    type="password"
+                    className={cx(styles.input, styles.mono)}
+                    value={openRouterKey}
+                    placeholder={namingServer?.configured ? 'Using the server’s key' : 'sk-or-…'}
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(e) => setOpenRouterKey(e.target.value)}
+                  />
+                  <span className={styles.mutedText}>
+                    {namingServer?.configured === false
+                      ? 'The server has no key set, so naming needs one here.'
+                      : 'Only needed if you want to use your own credits. Saved in this browser.'}
+                  </span>
+                </label>
+              </details>
+
+              <div className={styles.dialogActions}>
+                {items.some((i) => i.nameStatus === 'done' && i.nameWords) && (
+                  <button
+                    className={cx(styles.btn, styles.btnQuiet)}
+                    onClick={() => {
+                      const n = restyleAllNames();
+                      showToast(`Updated ${n} name${n === 1 ? '' : 's'}`, 'ok');
+                    }}
+                  >
+                    Apply to AI-named images
+                  </button>
+                )}
+                <button className={cx(styles.btn, styles.btnPrimary)} onClick={() => setNamingDialogOpen(false)}>Done</button>
               </div>
             </div>
           </div>
@@ -3478,221 +4053,170 @@ export default function ImageTool() {
       )}
 
       {publishDialogMounted && (
-        <div
-          className={`${styles.dialogBackdrop}${publishDialogVisible ? ` ${styles.open}` : ''}`}
-          onClick={closePublishDialog}
-        >
-          <div className={styles.dialogPanel} onClick={(e) => e.stopPropagation()}>
+        <div className={cx(styles.dialogBackdrop, publishDialogVisible && styles.open)} onClick={closePublishDialog}>
+          <div className={styles.dialogPanel} role="dialog" aria-modal="true" aria-label="Publish settings" onClick={(e) => e.stopPropagation()}>
             <div className={styles.dialogHead}>
-              <span className={styles.dialogTitle}>Publish to Roblox</span>
-              <button
-                className={styles.dialogClose}
-                onClick={closePublishDialog}
-                title="Close publish dialog"
-              >
-                ✕
-              </button>
+              <span className={styles.dialogTitle}>Publish settings</span>
+              <button className={styles.dialogClose} onClick={closePublishDialog} aria-label="Close">×</button>
             </div>
 
             <div className={styles.dialogBody}>
-              {/* Help toggle */}
-              <button
-                className={styles.helpToggle}
-                onClick={() => setShowHelp(!showHelp)}
-              >
-                <span>How does this work?</span>
-                <span className={`${styles.helpToggleChevron}${showHelp ? ` ${styles.open}` : ''}`}>▾</span>
-              </button>
-
-              {showHelp && (
-                <div className={styles.helpCard}>
-                  <div className={styles.helpStepRow}>
-                    <span className={styles.helpStepNum}>1.</span>
-                    <span>
-                      Create an API key at{' '}
-                      <button
-                        className={styles.helpLinkBtn}
-                        onClick={() => window.open('https://create.roblox.com/dashboard/credentials', '_blank')}
-                      >
-                        Creator Hub
-                      </button>
-                      . Enable <strong>Assets: Write</strong> permission.
-                    </span>
-                  </div>
-                  <div className={styles.helpStepRow}>
-                    <span className={styles.helpStepNum}>2.</span>
-                    <span>
-                      Find your User ID in your Roblox profile URL:{' '}
-                      <em>roblox.com/users/[YOUR_ID]/profile</em>. Or use a Group ID for group assets.
-                    </span>
-                  </div>
-                  <div className={styles.helpStepRow}>
-                    <span className={styles.helpStepNum}>3.</span>
-                    <span>Fill in the fields below and click <strong>Publish All</strong>.</span>
-                  </div>
-                </div>
+              {presets.length > 0 && (
+                <label className={styles.field}>
+                  <span className={styles.label}>Saved accounts</span>
+                  <select className={styles.input} value={selectedPresetId} onChange={(e) => applyPreset(e.target.value)}>
+                    <option value="">Choose one…</option>
+                    {presets.map((preset) => (
+                      <option key={preset.id} value={preset.id}>{preset.name}</option>
+                    ))}
+                  </select>
+                </label>
               )}
 
-              <div>
-                <label className={styles.label}>API Key</label>
+              <label className={styles.field}>
+                <span className={styles.label}>Open Cloud API key</span>
                 <div className={styles.passWrap}>
                   <input
                     type={showKey ? 'text' : 'password'}
-                    className={styles.input}
+                    className={cx(styles.input, styles.mono)}
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="rblx_••••••••••••••••••••"
+                    placeholder="Paste your key"
                     autoComplete="off"
                     spellCheck={false}
                   />
-                  <button className={styles.eyeBtn} onClick={() => setShowKey(!showKey)} tabIndex={-1}>
-                    {showKey ? '○' : '●'}
+                  <button type="button" className={styles.eyeBtn} onClick={() => setShowKey(!showKey)}>
+                    {showKey ? 'Hide' : 'Show'}
                   </button>
                 </div>
-                <p className={styles.subtleHint}>Saved locally in your browser on this device.</p>
-              </div>
+              </label>
 
-              <div className={styles.presetBox}>
-                <label className={styles.label}>Presets</label>
-                <select
-                  className={styles.input}
-                  value={selectedPresetId}
-                  onChange={(e) => applyPreset(e.target.value)}
-                >
-                  <option value="">Select preset...</option>
-                  {presets.map((preset) => (
-                    <option key={preset.id} value={preset.id}>
-                      {preset.name}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="text"
-                  className={styles.input}
-                  value={presetName}
-                  onChange={(e) => setPresetName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') saveNewPreset();
-                  }}
-                  placeholder="Preset name"
-                />
-                <div className={styles.presetActions}>
-                  <button
-                    className={styles.smallBtn}
-                    onClick={saveNewPreset}
-                    disabled={!presetName.trim() || !apiKey.trim() || !creatorId.trim()}
-                    title="Save as a new preset"
-                  >
-                    Save New
-                  </button>
-                  <button
-                    className={styles.smallBtn}
-                    onClick={updatePreset}
-                    disabled={!selectedPresetId || !presetName.trim() || !apiKey.trim() || !creatorId.trim()}
-                    title="Update selected preset with current fields"
-                  >
-                    Update
-                  </button>
-                  <button
-                    className={styles.smallBtn}
-                    onClick={deletePreset}
-                    disabled={!selectedPresetId}
-                    title="Delete selected preset"
-                  >
-                    Delete
-                  </button>
-                </div>
-                <p className={styles.subtleHint}>Pick one to load instantly, then Save New or Update as needed.</p>
-              </div>
-
-              <div>
-                <label className={styles.label}>Creator Type</label>
-                <div className={styles.toggleGroup}>
+              <div className={styles.field}>
+                <span className={styles.label}>Upload to</span>
+                <div className={styles.segmented}>
                   {(['user', 'group'] as CreatorType[]).map((t) => (
-                    <button
-                      key={t}
-                      className={`${styles.toggleBtn}${creatorType === t ? ` ${styles.active}` : ''}`}
-                      onClick={() => setCreatorType(t)}
-                    >
-                      {t === 'user' ? 'User' : 'Group'}
+                    <button key={t} className={cx(styles.segment, creatorType === t && styles.segmentActive)} onClick={() => setCreatorType(t)}>
+                      {t === 'user' ? 'My account' : 'A group'}
                     </button>
                   ))}
                 </div>
               </div>
 
-              <div>
-                <label className={styles.label}>
-                  {creatorType === 'user' ? 'User ID' : 'Group ID'}
-                </label>
+              <label className={styles.field}>
+                <span className={styles.label}>{creatorType === 'user' ? 'User ID' : 'Group ID'}</span>
                 <input
                   type="text"
-                  className={styles.input}
+                  inputMode="numeric"
+                  className={cx(styles.input, styles.mono)}
                   value={creatorId}
-                  onChange={(e) => setCreatorId(e.target.value)}
-                  placeholder={creatorType === 'user' ? '12345678' : '87654321'}
+                  onChange={(e) => setCreatorId(e.target.value.replace(/\D/g, ''))}
+                  placeholder={creatorType === 'user' ? 'From roblox.com/users/ID/profile' : 'From roblox.com/communities/ID'}
                 />
+              </label>
+
+              <details className={styles.advanced} open={showHelp} onToggle={(e) => setShowHelp((e.target as HTMLDetailsElement).open)}>
+                <summary>How to get an API key</summary>
+                <ol className={styles.helpList}>
+                  <li>
+                    Open{' '}
+                    <a href="https://create.roblox.com/dashboard/credentials" target="_blank" rel="noreferrer">Creator Hub credentials</a>{' '}
+                    and create an API key.
+                  </li>
+                  <li>Add the <strong>Assets</strong> API with read and write access, for your account or the group you upload to.</li>
+                  <li>Allow your IP (or 0.0.0.0/0 for a hosted site), then copy the key here.</li>
+                </ol>
+              </details>
+
+              <div className={styles.presetBox}>
+                <span className={styles.label}>Save these as an account</span>
+                <div className={styles.inlineForm}>
+                  <input
+                    type="text"
+                    className={styles.input}
+                    value={presetName}
+                    onChange={(e) => setPresetName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') saveNewPreset(); }}
+                    placeholder="e.g. Whimsy group"
+                  />
+                  <button className={cx(styles.btn, styles.btnSmall)} onClick={saveNewPreset} disabled={!presetName.trim() || !publishReady}>Save</button>
+                </div>
+                {selectedPresetId && (
+                  <div className={styles.btnRow}>
+                    <button className={cx(styles.btn, styles.btnSmall)} onClick={updatePreset} disabled={!presetName.trim() || !publishReady}>Update selected</button>
+                    <button className={cx(styles.btn, styles.btnSmall, styles.btnQuiet)} onClick={deletePreset}>Delete selected</button>
+                  </div>
+                )}
+              </div>
+              <p className={styles.mutedText}>Keys are stored only in this browser and sent to Roblox through this site’s server.</p>
+
+              <div className={styles.dialogActions}>
+                <button className={cx(styles.btn, styles.btnPrimary)} onClick={closePublishDialog}>Done</button>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* ── Changelog Modal ── */}
+      {shortcutsOpen && (
+        <div className={cx(styles.dialogBackdrop, styles.open)} onClick={() => setShortcutsOpen(false)}>
+          <div className={styles.dialogPanel} role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" onClick={(e) => e.stopPropagation()}>
+            <div className={styles.dialogHead}>
+              <span className={styles.dialogTitle}>Keyboard shortcuts</span>
+              <button className={styles.dialogClose} onClick={() => setShortcutsOpen(false)} aria-label="Close">×</button>
+            </div>
+            <div className={styles.dialogBody}>
+              <dl className={styles.shortcutList}>
+                {SHORTCUTS.map((sc) => (
+                  <div key={sc.keys} className={styles.shortcutRow}>
+                    <dt><kbd>{sc.keys}</kbd></dt>
+                    <dd>{sc.action}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          </div>
+        </div>
+      )}
+
       {changelogOpen && (
         <div
-          className={`${styles.dialogBackdrop} ${styles.open}`}
+          className={cx(styles.dialogBackdrop, styles.open)}
           onClick={() => {
             setChangelogOpen(false);
             try { window.localStorage.setItem(LAST_SEEN_VERSION_KEY, APP_VERSION); } catch { /* ignore */ }
           }}
         >
-          <div className={styles.changelogPanel} onClick={(e) => e.stopPropagation()}>
+          <div className={cx(styles.dialogPanel, styles.changelogPanel)} role="dialog" aria-modal="true" aria-label="What's new" onClick={(e) => e.stopPropagation()}>
             <div className={styles.dialogHead}>
-              <span className={styles.dialogTitle}>What&apos;s New</span>
+              <span className={styles.dialogTitle}>What’s new</span>
               <button
                 className={styles.dialogClose}
                 onClick={() => {
                   setChangelogOpen(false);
                   try { window.localStorage.setItem(LAST_SEEN_VERSION_KEY, APP_VERSION); } catch { /* ignore */ }
                 }}
-                title="Close changelog"
+                aria-label="Close"
               >
-                ✕
+                ×
               </button>
             </div>
             <div className={styles.changelogBody}>
               {CHANGELOG.map((entry, idx) => (
                 <div key={entry.version} className={styles.changelogVersion}>
                   <div className={styles.changelogVersionHead}>
-                    <span className={`${styles.changelogTag}${idx === 0 ? ` ${styles.changelogTagLatest}` : ''}`}>
-                      v{entry.version}
-                    </span>
-                    <span className={styles.changelogDate}>{entry.date}</span>
+                    <span className={cx(styles.changelogTag, idx === 0 && styles.changelogTagLatest)}>v{entry.version}</span>
+                    <span className={styles.mutedText}>{entry.date}</span>
                   </div>
-                  <span className={styles.changelogTitle}>{entry.title}</span>
-                  {entry.features && (
-                    <div className={styles.changelogSection}>
-                      <span className={styles.changelogSectionLabel}>Features</span>
-                      <ul className={styles.changelogList}>
-                        {entry.features.map((f, i) => <li key={i}>{f}</li>)}
-                      </ul>
-                    </div>
-                  )}
-                  {entry.improvements && (
-                    <div className={styles.changelogSection}>
-                      <span className={styles.changelogSectionLabel}>Improvements</span>
-                      <ul className={styles.changelogList}>
-                        {entry.improvements.map((f, i) => <li key={i}>{f}</li>)}
-                      </ul>
-                    </div>
-                  )}
-                  {entry.fixes && (
-                    <div className={styles.changelogSection}>
-                      <span className={styles.changelogSectionLabel}>Fixes</span>
-                      <ul className={styles.changelogList}>
-                        {entry.fixes.map((f, i) => <li key={i}>{f}</li>)}
-                      </ul>
-                    </div>
+                  <h3 className={styles.changelogTitle}>{entry.title}</h3>
+                  {([['New', entry.features], ['Better', entry.improvements], ['Fixed', entry.fixes]] as [string, string[] | undefined][]).map(([label, list]) =>
+                    list && list.length > 0 ? (
+                      <div key={label} className={styles.changelogSection}>
+                        <span className={styles.changelogSectionLabel}>{label}</span>
+                        <ul className={styles.changelogList}>
+                          {list.map((f, i) => <li key={i}>{f}</li>)}
+                        </ul>
+                      </div>
+                    ) : null,
                   )}
                 </div>
               ))}

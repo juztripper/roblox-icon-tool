@@ -1,54 +1,79 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/*
+  Pixel Forge — workbench theme.
+  Quiet graphite panels around one loud thing: the green cutting mat the
+  icon sits on. The accent (set at runtime from the theme picker) is the
+  colour of the craft knife — used for primary actions and selection only.
+*/
 
 :root {
-  --void: #07080a;
-  --panel: #0d0e12;
-  --surface: #141519;
-  --surface-2: #1b1c22;
-  --border: #1f2029;
-  --border-mid: #2a2b38;
-  --border-bright: #3d3e52;
-  --orange: #ff5a1f;
-  --orange-dim: #c44416;
-  --orange-hover: #ff6e3a;
-  --orange-light: #ff7b50;
-  --orange-glow: rgba(255, 90, 31, 0.15);
-  --orange-glow-strong: rgba(255, 90, 31, 0.3);
-  --green: #00e87b;
-  --green-dim: #00b85f;
-  --green-glow: rgba(0, 232, 123, 0.15);
-  --red: #ff3d3d;
-  --blue: #4488ff;
-  --text: #d8d9e8;
-  --text-dim: #6c6e88;
-  --text-muted: #35374a;
-  --checker-a: #141418;
-  --checker-b: #0c0c10;
-  --scanline: rgba(0, 0, 0, 0.04);
-  --scrim: rgba(7, 8, 10, 0.85);
-  --font: 'JetBrains Mono', monospace;
+  --bg: #15171c;
+  --panel: #1b1e24;
+  --raised: #242830;
+  --hover: #2b303a;
+  --line: #2c3038;
+  --line-strong: #3b404b;
+  --text: #eceef2;
+  --text-dim: #a4aab5;
+  --text-muted: #6f7581;
+
+  --mat: #1f4638;
+  --mat-deep: #183a2e;
+  --mat-line: rgba(214, 255, 236, 0.055);
+  --mat-line-strong: rgba(214, 255, 236, 0.13);
+
+  --ok: #4fd08a;
+  --err: #ff6b6b;
+  --busy: #7cb8ff;
+
+  --checker-a: #2a2e36;
+  --checker-b: #20242b;
+  --scrim: rgba(8, 10, 14, 0.62);
+  --shadow-pop: 0 18px 48px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+
+  /* Accent — overwritten by the theme picker. Kept under the old names so
+     saved themes from earlier versions still apply. */
+  --orange: #fbbf24;
+  --orange-dim: #c89612;
+  --orange-hover: #fccb4a;
+  --orange-light: #fdd775;
+  --orange-glow: rgba(251, 191, 36, 0.15);
+  --orange-glow-strong: rgba(251, 191, 36, 0.3);
+  --accent-ink: #1f1600;
+
+  --font: 'Bricolage Grotesque', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  color-scheme: dark;
 }
 
 [data-theme='light'] {
-  --void: #f3f4f8;
-  --panel: #ffffff;
-  --surface: #f7f8fb;
-  --surface-2: #eceef3;
-  --border: #dcdfe6;
-  --border-mid: #c3c7d1;
-  --border-bright: #9ea3b0;
-  --green: #00a85b;
-  --green-dim: #00894a;
-  --green-glow: rgba(0, 168, 91, 0.15);
-  --red: #d82c2c;
-  --blue: #2f6fd8;
-  --text: #1b1d24;
-  --text-dim: #545869;
-  --text-muted: #8d91a0;
-  --checker-a: #dcdfe6;
-  --checker-b: #f2f3f7;
-  --scanline: rgba(0, 0, 0, 0.02);
-  --scrim: rgba(30, 35, 45, 0.45);
+  --bg: #eceef2;
+  --panel: #f8f9fb;
+  --raised: #ffffff;
+  --hover: #eef0f4;
+  --line: #dcdfe5;
+  --line-strong: #c4c8d1;
+  --text: #191c22;
+  --text-dim: #4f5561;
+  --text-muted: #868c98;
+
+  --mat: #3e8266;
+  --mat-deep: #357357;
+  --mat-line: rgba(255, 255, 255, 0.09);
+  --mat-line-strong: rgba(255, 255, 255, 0.2);
+
+  --ok: #13955a;
+  --err: #d33a3a;
+  --busy: #2f6fd8;
+
+  --checker-a: #dfe2e8;
+  --checker-b: #f4f5f8;
+  --scrim: rgba(30, 35, 45, 0.4);
+  --shadow-pop: 0 18px 48px rgba(20, 25, 35, 0.18), 0 2px 6px rgba(20, 25, 35, 0.08);
+
+  color-scheme: light;
 }
 
 *, *::before, *::after {
@@ -59,91 +84,75 @@
 
 html, body {
   height: 100%;
-  background: var(--void);
+  background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.45;
+  font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
 
-/* Dot grid background */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background-image: radial-gradient(circle, var(--border) 1px, transparent 1px);
-  background-size: 24px 24px;
-  pointer-events: none;
-  z-index: 0;
-  opacity: 0.6;
+button, input, select, textarea {
+  font: inherit;
+  color: inherit;
 }
 
-/* Scanline overlay */
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    var(--scanline) 2px,
-    var(--scanline) 4px
-  );
-  pointer-events: none;
-  z-index: 1;
+button {
+  cursor: pointer;
+  background: none;
+  border: none;
 }
 
-#__next, main {
-  position: relative;
-  z-index: 2;
+button:disabled {
+  cursor: not-allowed;
 }
 
-/* Scrollbar */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: var(--panel); }
-::-webkit-scrollbar-thumb { background: var(--border-mid); }
-::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+a {
+  color: var(--orange);
+}
 
-/* Selection */
+:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 2px;
+}
+
 ::selection {
   background: var(--orange);
-  color: #fff;
+  color: var(--accent-ink);
 }
 
-/* Animations */
-@keyframes pulse-border {
-  0%, 100% { border-color: var(--border-mid); }
-  50% { border-color: var(--orange); }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 8px; border: 2px solid var(--panel); }
+
+kbd {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  background: var(--raised);
+  white-space: nowrap;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 @keyframes shimmer {
   0% { background-position: -200% center; }
   100% { background-position: 200% center; }
 }
 
-@keyframes slide-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
 }
 
-@keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes glow-pulse {
-  0%, 100% { box-shadow: 0 0 12px var(--orange-glow); }
-  50% { box-shadow: 0 0 24px var(--orange-glow-strong); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
