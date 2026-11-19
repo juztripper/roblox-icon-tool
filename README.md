@@ -11,6 +11,7 @@ A browser workbench for getting images into Roblox: cut out backgrounds, name th
 - **Live export preview** — the export frame is drawn at its real size. Switch between checker, dot grid, dark or light backgrounds, and hold Compare (or C) to see the original.
 - **Publish to Roblox** — user or group uploads, saved accounts, skip already-published images, automatic follow-up for uploads Roblox is still processing.
 - **Copy IDs** as a Luau module, JSON or a plain list. Download everything as one ZIP (includes `asset_ids.lua` when images are published).
+- **Colour picker** — a Colors tab to drop or paste any image, hover with a magnifier and click to grab a colour as HEX, RGB, `Color3.fromRGB`, `Color3.fromHex` or CSS. Average 3×3/5×5 areas, keep a saved list, copy it as a Luau table, and see the image's main colours.
 - **Drafts and library** — saved locally in the browser (localStorage + IndexedDB). Import any Roblox image by asset ID.
 - Light/dark/system appearance, accent colours, keyboard shortcuts (press `?`), mobile layout.
 
